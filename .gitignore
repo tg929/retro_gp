@@ -1,0 +1,5 @@
+*.md
+*.pyc
+scscore-master/*
+scscore/*
+synga-FE64/*
