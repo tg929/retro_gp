@@ -67,7 +67,7 @@ def run():
         )
 
         print("Top solutions:")
-        for rank, ind in enumerate(population[:3], start=1):
+        for rank, ind in enumerate(population[:100], start=1):
             objs = ind["fitness"].objectives
             print(
                 f"  [{rank}] scalar={ind['fitness'].scalar:.3f} "
