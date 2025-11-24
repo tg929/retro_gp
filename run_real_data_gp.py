@@ -1,4 +1,7 @@
 """Run GP search on real data using modular gp_core helpers."""
+import sys
+from pathlib import Path
+
 from gp_core import config
 from gp_core.data_loading import load_world_from_data
 from gp_core.templates import template_ids
@@ -82,4 +85,29 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    # Mirror stdout/stderr to a log file for reproducibility
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    log_path = log_dir / "run_real_data_gp_output.txt"
+
+    class _Tee:
+        def __init__(self, *streams):
+            self.streams = streams
+
+        def write(self, data):
+            for s in self.streams:
+                s.write(data)
+            return len(data)
+
+        def flush(self):
+            for s in self.streams:
+                s.flush()
+
+    with log_path.open("w", encoding="utf-8") as _f:
+        tee = _Tee(sys.stdout, _f)
+        _orig_out, _orig_err = sys.stdout, sys.stderr
+        sys.stdout = sys.stderr = tee
+        try:
+            run()
+        finally:
+            sys.stdout, sys.stderr = _orig_out, _orig_err
