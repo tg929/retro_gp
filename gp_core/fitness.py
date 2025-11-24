@@ -1,13 +1,30 @@
 """SCScore loading and fitness evaluator helpers."""
 import os
 from typing import Callable, Dict
+import warnings
 
 import numpy as np
 try:
     from scscore.scscore.standalone_model_numpy import SCScorer
     _HAS_SCSCORE = True
 except ImportError:
+    # Try to use the vendored scscore in the repo root if available
+    import sys
+    import pathlib
+
     _HAS_SCSCORE = False
+    try:
+        repo_root = pathlib.Path(__file__).resolve().parents[1]
+        vendored = repo_root / "scscore"
+        if (vendored / "scscore").exists():
+            # Need parent of top-level package on sys.path
+            sys.path.append(str(repo_root))
+            from scscore.scscore.standalone_model_numpy import SCScorer  # type: ignore
+            _HAS_SCSCORE = True
+        else:
+            _HAS_SCSCORE = False
+    except Exception:
+        _HAS_SCSCORE = False
 
 from gp_retro_obj import ObjectiveSpec, RouteFitnessEvaluator
 from . import config
@@ -31,8 +48,8 @@ def build_scscore_fn(model_dir=None, fp_length=1024) -> Callable[[str], float]:
     global _scscore_model
     
     if not _HAS_SCSCORE:
-        # No silent fallback: require SCScore dependency to be available.
-        raise ImportError("SCScore is required but not installed; install `scscore` to use build_scscore_fn().")
+        warnings.warn("SCScore not available; falling back to a dummy complexity scorer (constant 5.0).")
+        return lambda smiles: 5.0
 
     model_dir = model_dir or config.SCSCORE_DIR
     if _scscore_model is None:

@@ -85,10 +85,13 @@ def run():
 
 
 if __name__ == "__main__":
-    # Mirror stdout/stderr to a log file for reproducibility
+    # Mirror stdout/stderr to a time-stamped log file for reproducibility
+    from datetime import datetime
+
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
-    log_path = log_dir / "run_real_data_gp_output.txt"
+    ts = datetime.now().strftime("%m%d%H%M")
+    log_path = log_dir / f"run_real_data_gp_output_{ts}.txt"
 
     class _Tee:
         def __init__(self, *streams):
