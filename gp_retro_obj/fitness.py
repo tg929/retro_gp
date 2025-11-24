@@ -138,7 +138,8 @@ class RouteFitnessEvaluator:
                  audit_fn: Optional[Callable[[Any], Dict[str, Any]]] = None,
                  scscore_fn: Optional[Callable[[str], float]] = None,
                  target_smiles: Optional[str] = None,
-                 property_oracles: Optional[Dict[str, Callable[[str], Optional[float]]]] = None):
+                 property_oracles: Optional[Dict[str, Callable[[str], Optional[float]]]] = None,
+                 llm_style_scalar: bool = False):
         self.specs = objective_specs
         feas, reprm = _try_import_gp_modules()
 
@@ -159,6 +160,7 @@ class RouteFitnessEvaluator:
 
         self.scscore_fn = scscore_fn or _fallback_scscore
         self.target_smiles = target_smiles
+        self.llm_style_scalar = llm_style_scalar
 
         # default oracles: QED on the target
         self.property_oracles = property_oracles or {}
@@ -230,7 +232,28 @@ class RouteFitnessEvaluator:
                 objs[k] = float(v)
 
         # Scalarize
-        scalar = Scalarizer.weighted_sum(objs, self.specs)
+        if self.llm_style_scalar:
+            # LLM-Syn style: final score is negative (sum + mean) of SCScore over non-purchasable set
+            # and zero if solved. Keeps objectives for diagnostics.
+            if is_solved:
+                scalar = 0.0
+            else:
+                sc_scores = []
+                for smi in current_set:
+                    if self.purchasable_fn(smi):
+                        continue
+                    try:
+                        sc_scores.append(float(self.scscore_fn(smi)))
+                    except Exception:
+                        sc_scores.append(5.0)
+                if sc_scores:
+                    s_sum = sum(sc_scores)
+                    s_mean = sum(sc_scores) / len(sc_scores)
+                    scalar = -(s_sum + s_mean)
+                else:
+                    scalar = 0.0
+        else:
+            scalar = Scalarizer.weighted_sum(objs, self.specs)
 
         extra = {
             'is_solved': is_solved,

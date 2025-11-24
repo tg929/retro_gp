@@ -25,3 +25,7 @@ OBJECTIVE_WEIGHTS = {
 
 # Non-empty bonus to avoid empty programs dominating
 NONEMPTY_BONUS = 2.0
+
+# Optional: override scalarization with an LLM-Syn-Planner style reward
+# (negative sum/mean of SCScore on the current non-purchasable set).
+LLM_STYLE_SCALAR = False

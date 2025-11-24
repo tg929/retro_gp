@@ -64,4 +64,5 @@ def make_evaluator(specs, inventory, audit_fn, sc_fn, target):
         audit_fn=audit_fn,
         scscore_fn=sc_fn,
         target_smiles=target,
+        llm_style_scalar=config.LLM_STYLE_SCALAR,
     )
