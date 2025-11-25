@@ -23,7 +23,7 @@ def templates_of_program(prog: Program) -> List[str]:
     return tids
 
 
-def random_program(template_pool: List[str], min_len=1, max_len=3) -> Program:
+def random_program(template_pool: List[str], min_len=1, max_len=8) -> Program:
     k = random.randint(min_len, min(max_len, config.MAX_TEMPLATES_PER_PROG))
     tids = [random.choice(template_pool) for _ in range(k)]
     return program_from_templates(tids)

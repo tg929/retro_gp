@@ -6,12 +6,12 @@ DATA_ROOT = ROOT / "data"
 SCSCORE_DIR = ROOT / "scscore" / "models" / "full_reaxys_model_1024bool"
 
 # GP defaults
-POP_SIZE = 12
+POP_SIZE = 200
 GENERATIONS = 8
 PCROSS = 0.7
 PMUT = 0.4
 SEED = 123
-MAX_TEMPLATES_PER_PROG = 5
+MAX_TEMPLATES_PER_PROG = 8
 
 # Evaluation weights; tweak to discourage empty routes
 OBJECTIVE_WEIGHTS = {

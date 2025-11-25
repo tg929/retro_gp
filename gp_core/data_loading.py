@@ -68,10 +68,11 @@ def load_world_from_data(limit_targets: Optional[int] = None):
     templates_path = root / "reaction_template" / "hb.txt"
     # Prefer test_chembl/enamine targets if present; otherwise fall back to existing small/text sets
     target_priority = [
+        tgt_root / "chembl_small.txt",
         tgt_root / "test_chembl.csv",
         tgt_root / "enamine_smiles_1k.csv",
         tgt_root / "test_synthesis.csv",
-        tgt_root / "chembl_small.txt",
+        
         tgt_root / "chembl.txt",
     ]
     targets_path = next((p for p in target_priority if p.exists()), None)

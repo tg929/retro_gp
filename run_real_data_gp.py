@@ -38,7 +38,7 @@ def run():
     specs = build_objectives(config.OBJECTIVE_WEIGHTS)
     hist = MetricsHistory()
 
-    for ti, target in enumerate(targets[:3]):
+    for ti, target in enumerate(targets[:100]):
         print(f"\n=== Target {ti+1}: {target} ===")
 
         # 针对当前目标先做一次可行动作掩码，避免全部落空
@@ -70,7 +70,7 @@ def run():
         )
 
         print("Top solutions:")
-        for rank, ind in enumerate(population[:100], start=1):
+        for rank, ind in enumerate(population[:3], start=1):
             objs = ind["fitness"].objectives
             print(
                 f"  [{rank}] scalar={ind['fitness'].scalar:.3f} "
