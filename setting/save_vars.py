@@ -3,6 +3,10 @@ Save a snapshot of the current GP / executor settings to a JSON file.
 
 Example:
     python setting/save_vars.py --tag test_run --include-stats
+
+    执行：
+    python setting/save_vars.py --tag test --include-stats --note "大库存 + 默认参数"
+
 """
 
 from __future__ import annotations

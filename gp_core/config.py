@@ -6,7 +6,7 @@ DATA_ROOT = ROOT / "data"
 SCSCORE_DIR = ROOT / "scscore" / "models" / "full_reaxys_model_1024bool"
 
 # GP defaults
-POP_SIZE = 200
+POP_SIZE = 10
 GENERATIONS = 8
 PCROSS = 0.7
 PMUT = 0.4
