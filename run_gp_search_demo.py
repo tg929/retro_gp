@@ -100,12 +100,20 @@ def templates_of_program(prog: Program) -> List[str]:
 
 
 
-def program_from_templates(template_ids: List[str]) -> Program:
-    steps = [Select(0)]
+# def program_from_templates(template_ids: List[str]) -> Program:
+#     steps = [Select(0)]
+#     for tid in template_ids:
+#         steps.append(ApplyTemplate(tid, rational="gp"))
+#     steps.append(Stop())
+#     return Program(steps)
+def program_from_templates(template_ids):
+    steps = []
     for tid in template_ids:
+        steps.append(Select(0))                     # 每一步都先 Select
         steps.append(ApplyTemplate(tid, rational="gp"))
     steps.append(Stop())
     return Program(steps)
+
 
 
 def random_program(template_pool: List[str], min_len=0, max_len=3) -> Program:
@@ -162,41 +170,62 @@ def mutate_program(
 #     fit = evaluator.evaluate(route)
 #     return {"program": prog, "route": route, "fitness": fit}
 
-def evaluate_program(
-    prog: Program,
-    exe: FeasibleExecutor,
-    evaluator: RouteFitnessEvaluator,
-    target: str,
-) -> Dict[str, Any]:
-    """
-    执行 DP 程序并计算适应度。
-    如果程序结构非法导致 FeasibleExecutor 抛出异常，
-    则把该个体视为“失败路线”（用一个空路线代替），
-    保证 GP 循环不会因为坏个体直接崩溃。
-    """
+# def evaluate_program(
+#     prog: Program,
+#     exe: FeasibleExecutor,
+#     evaluator: RouteFitnessEvaluator,
+#     target: str,
+# ) -> Dict[str, Any]:
+#     """
+#     执行 DP 程序并计算适应度。
+#     如果程序结构非法导致 FeasibleExecutor 抛出异常，
+#     则把该个体视为“失败路线”（用一个空路线代替），
+#     保证 GP 循环不会因为坏个体直接崩溃。
+#     """
+#     try:
+#         route = exe.execute(prog, target_smiles=target)
+#     except Exception as e:
+#         # 打印一下方便调试（可选）
+#         # print(f"[WARN] executor failed for program: {prog}, err={e}")
+
+#         # 构造一个“空程序”作为失败个体：只包含 Stop
+#         safe_prog = Program([Stop()])
+
+#         try:
+#             route = exe.execute(safe_prog, target_smiles=target)
+#         except Exception:
+#             # 理论上不会再失败；保险起见，构造一个最小的“空壳”对象
+#             class DummyRoute:
+#                 def __init__(self, target_smiles):
+#                     self.steps = []
+#                     self.target_smiles = target_smiles
+
+#                 def to_json(self):
+#                     return "[]"
+
+#                 def is_solved(self, stock):
+#                     return False
+
+#             route = DummyRoute(target)
+
+#     fit = evaluator.evaluate(route)
+#     return {"program": prog, "route": route, "fitness": fit}
+def evaluate_program(prog, exe, evaluator, target):
     try:
         route = exe.execute(prog, target_smiles=target)
     except Exception as e:
-        # 打印一下方便调试（可选）
-        # print(f"[WARN] executor failed for program: {prog}, err={e}")
-
-        # 构造一个“空程序”作为失败个体：只包含 Stop
-        safe_prog = Program([Stop()])
-
+        print(f"[EVAL] execute(prog) failed: {repr(e)}")
         try:
-            route = exe.execute(safe_prog, target_smiles=target)
-        except Exception:
-            # 理论上不会再失败；保险起见，构造一个最小的“空壳”对象
+            route = exe.execute(Program([Stop()]), target_smiles=target)
+        except Exception as e2:
+            print(f"[EVAL] execute(Stop) also failed: {repr(e2)}")
+
             class DummyRoute:
                 def __init__(self, target_smiles):
                     self.steps = []
                     self.target_smiles = target_smiles
-
-                def to_json(self):
-                    return "[]"
-
-                def is_solved(self, stock):
-                    return False
+                def to_json(self): return "[]"
+                def is_solved(self, stock): return False
 
             route = DummyRoute(target)
 
@@ -209,7 +238,7 @@ def evaluate_program(
 # --------------------------------------------------------------------
 def run_gp_search(
     pop_size=20,
-    generations=15,
+    generations=10,
     p_crossover=0.7,
     p_mutation=0.4,
     seed=123,

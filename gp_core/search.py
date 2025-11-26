@@ -57,7 +57,7 @@ def run_gp_for_target(
     for _ in range(pop_size):
         # Use init_templates for the first random programs to boost start
         # But subsequent mutations will use the full template_pool
-        prog = random_program(init_templates if random.random() < 0.8 else template_pool, min_len=1, max_len=3)
+        prog = random_program(init_templates if random.random() < 0.8 else template_pool, min_len=1, max_len=config.MAX_TEMPLATES_PER_PROG)
         ind = evaluate_program(prog, exe, evaluator, target)
         if nonempty_bonus and getattr(ind["route"], "steps", []):
             ind["fitness"].scalar += nonempty_bonus
