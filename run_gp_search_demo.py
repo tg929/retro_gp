@@ -210,27 +210,47 @@ def mutate_program(
 
 #     fit = evaluator.evaluate(route)
 #     return {"program": prog, "route": route, "fitness": fit}
-def evaluate_program(prog, exe, evaluator, target):
+def evaluate_program(
+    prog: Program,
+    exe: FeasibleExecutor,
+    evaluator: RouteFitnessEvaluator,
+    target: str,
+) -> Dict[str, Any]:
+    """
+    执行 DP 程序并计算适应度。
+    如果程序结构非法导致 FeasibleExecutor 抛出异常，
+    则把该个体视为“失败路线”（用一个空路线代替），
+    保证 GP 循环不会因为坏个体直接崩溃。
+    """
     try:
         route = exe.execute(prog, target_smiles=target)
     except Exception as e:
-        print(f"[EVAL] execute(prog) failed: {repr(e)}")
-        try:
-            route = exe.execute(Program([Stop()]), target_smiles=target)
-        except Exception as e2:
-            print(f"[EVAL] execute(Stop) also failed: {repr(e2)}")
+        # 打印错误信息，方便定位是哪一步出问题（例如 rdchiral 缺失、Program 语法非法等）
+        print(f"[WARN] executor failed for program: {prog}, err={e}")
 
+        # 构造一个“空程序”作为失败个体：只包含 Stop
+        safe_prog = Program([Stop()])
+
+        try:
+            route = exe.execute(safe_prog, target_smiles=target)
+        except Exception:
+            # 理论上不会再失败；保险起见，构造一个最小的“空壳”对象
             class DummyRoute:
                 def __init__(self, target_smiles):
                     self.steps = []
                     self.target_smiles = target_smiles
-                def to_json(self): return "[]"
-                def is_solved(self, stock): return False
+
+                def to_json(self):
+                    return "[]"
+
+                def is_solved(self, stock):
+                    return False
 
             route = DummyRoute(target)
 
     fit = evaluator.evaluate(route)
     return {"program": prog, "route": route, "fitness": fit}
+
 
 
 # --------------------------------------------------------------------
