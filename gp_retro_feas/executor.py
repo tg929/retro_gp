@@ -16,6 +16,7 @@ class ExecutePolicy:
     require_all_purchasable: bool = False
     max_reactants: Optional[int] = None
     repair_on_failure: bool = True  # if selected template fails, try other feasible templates
+    stop_when_all_purchasable: bool = True  # early-stop route once all molecules are purchasable
 
 class FeasibleExecutor:
     """
@@ -90,6 +91,16 @@ class FeasibleExecutor:
                 route.append(step)
                 molecule_set = updated
                 last_selected = None
+
+                # Early stopping: if at any point all molecules are purchasable
+                # we treat the route as complete and ignore remaining instructions.
+                if (
+                    self.policy.stop_when_all_purchasable
+                    and self.inventory is not None
+                    and molecule_set
+                    and all(self.inventory.is_purchasable(m) for m in molecule_set)
+                ):
+                    break
                 continue
 
             raise TypeError(f"Unknown instruction: {instr}")
