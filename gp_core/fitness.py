@@ -51,7 +51,7 @@ def build_scscore_fn(model_dir=None, fp_length=1024) -> Callable[[str], float]:
         warnings.warn("SCScore not available; falling back to a dummy complexity scorer (constant 5.0).")
         return lambda smiles: 5.0
 
-    model_dir = model_dir or config.SCSCORE_DIR
+    model_dir = model_dir or config.scscore_dir
     if _scscore_model is None:
         try:
             model = SCScorer()
@@ -81,5 +81,5 @@ def make_evaluator(specs, inventory, audit_fn, sc_fn, target):
         audit_fn=audit_fn,
         scscore_fn=sc_fn,
         target_smiles=target,
-        llm_style_scalar=config.LLM_STYLE_SCALAR,
+        llm_style_scalar=config.llm_style_scalar,
     )

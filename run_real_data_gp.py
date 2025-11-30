@@ -35,10 +35,29 @@ def make_audit_fn(stock, target_smiles: str):
 def run():
     inventory, reg, targets = load_world_from_data(limit_targets=None)
     sc_fn = build_scscore_fn()
-    specs = build_objectives(config.OBJECTIVE_WEIGHTS)
+    specs = build_objectives(config.objective_weights)
     hist = MetricsHistory()
 
-    for ti, target in enumerate(targets[:10]):
+    max_targets = 10
+    n_targets = min(max_targets, len(targets))
+
+    def _progress(current: int, total: int):
+        """Print a simple progress bar to the real terminal (not the log)."""
+        if total <= 0:
+            return
+        bar_width = 30
+        frac = max(0.0, min(1.0, current / total))
+        filled = int(bar_width * frac)
+        bar = "#" * filled + "-" * (bar_width - filled)
+        print(
+            f"\rProgress: [{bar}] {current}/{total} targets",
+            end="",
+            file=sys.__stdout__,
+            flush=True,
+        )
+
+    for ti, target in enumerate(targets[:n_targets]):
+        _progress(ti, n_targets)
         print(f"\n=== Target {ti+1}: {target} ===")
 
         # 针对当前目标先做一次可行动作掩码，避免全部落空
@@ -79,8 +98,12 @@ def run():
             )
             print(ind["route"].to_json())
 
+    # 完成所有目标后，打印一次完整进度并换行
+    _progress(n_targets, n_targets)
+    print(file=sys.__stdout__)
+
     if hist.has_updates:
-        stats = hist.metrics(budget=config.POP_SIZE * config.GENERATIONS)
+        stats = hist.metrics(budget=config.pop_size * config.generations)
         print("\nMetrics snapshot:", {k: round(v, 3) for k, v in stats.items()})
 
 
@@ -93,23 +116,10 @@ if __name__ == "__main__":
     ts = datetime.now().strftime("%m%d%H%M")
     log_path = log_dir / f"run_real_data_gp_output_{ts}.txt"
 
-    class _Tee:
-        def __init__(self, *streams):
-            self.streams = streams
-
-        def write(self, data):
-            for s in self.streams:
-                s.write(data)
-            return len(data)
-
-        def flush(self):
-            for s in self.streams:
-                s.flush()
-
+    # 将所有 print 输出重定向到日志文件；进度条单独写到 sys.__stdout__
     with log_path.open("w", encoding="utf-8") as _f:
-        tee = _Tee(sys.stdout, _f)
         _orig_out, _orig_err = sys.stdout, sys.stderr
-        sys.stdout = sys.stderr = tee
+        sys.stdout = sys.stderr = _f
         try:
             run()
         finally:

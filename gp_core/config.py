@@ -1,20 +1,20 @@
 """Default paths and hyperparameters."""
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-DATA_ROOT = ROOT / "data"
-SCSCORE_DIR = ROOT / "scscore" / "models" / "full_reaxys_model_1024bool"
+root = Path(__file__).resolve().parents[1]
+data_root = root / "data"
+scscore_dir = root / "scscore" / "models" / "full_reaxys_model_1024bool"
 
 # GP defaults
-POP_SIZE = 10
-GENERATIONS = 8
-PCROSS = 0.7
-PMUT = 0.4
-SEED = 123
-MAX_TEMPLATES_PER_PROG = 8
+pop_size = 10
+generations = 8
+pcross = 0.7
+pmut = 0.4
+seed = 123
+max_templates_per_prog = 8
 
 # Evaluation weights; tweak to discourage empty routes
-OBJECTIVE_WEIGHTS = {
+objective_weights = {
     "solved": 100.0,
     "route_len": 1.0,
     "valid_prefix": 2.0,
@@ -24,8 +24,8 @@ OBJECTIVE_WEIGHTS = {
 }
 
 # Non-empty bonus to avoid empty programs dominating
-NONEMPTY_BONUS = 2.0
+nonempty_bonus = 2.0
 
 # Optional: override scalarization with an LLM-Syn-Planner style reward
 # (negative sum/mean of SCScore on the current non-purchasable set).
-LLM_STYLE_SCALAR = False
+llm_style_scalar = False

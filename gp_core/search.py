@@ -35,15 +35,15 @@ def run_gp_for_target(
     reg,
     evaluator,
     exe: FeasibleExecutor,
-    pop_size: int = config.POP_SIZE,
-    generations: int = config.GENERATIONS,
-    p_crossover: float = config.PCROSS,
-    p_mutation: float = config.PMUT,
-    seed: int = config.SEED,
+    pop_size: int = config.pop_size,
+    generations: int = config.generations,
+    p_crossover: float = config.pcross,
+    p_mutation: float = config.pmut,
+    seed: int = config.seed,
     template_pool: Optional[List[str]] = None,
     init_templates: Optional[List[str]] = None,  # New: specific templates for initialization
     history: Optional[MetricsHistory] = None,
-    nonempty_bonus: float = config.NONEMPTY_BONUS,
+    nonempty_bonus: float = config.nonempty_bonus,
 ):
     random.seed(seed)
     template_pool = template_pool or list(reg.templates.keys())
@@ -57,7 +57,11 @@ def run_gp_for_target(
     for _ in range(pop_size):
         # Use init_templates for the first random programs to boost start
         # But subsequent mutations will use the full template_pool
-        prog = random_program(init_templates if random.random() < 0.8 else template_pool, min_len=1, max_len=config.MAX_TEMPLATES_PER_PROG)
+        prog = random_program(
+            init_templates if random.random() < 0.8 else template_pool,
+            min_len=1,
+            max_len=config.max_templates_per_prog,
+        )
         ind = evaluate_program(prog, exe, evaluator, target)
         if nonempty_bonus and getattr(ind["route"], "steps", []):
             ind["fitness"].scalar += nonempty_bonus

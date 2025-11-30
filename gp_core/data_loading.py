@@ -53,7 +53,7 @@ def load_targets(path: Union[str, Path], limit: Optional[int] = None) -> List[st
 
 
 def load_world_from_data(limit_targets: Optional[int] = None):
-    root = config.DATA_ROOT
+    root = config.data_root
     bb_root = root / "building_block"
     tgt_root = root / "target molecular"
 
