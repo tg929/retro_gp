@@ -39,7 +39,7 @@ def main():
         "--matrix",
         type=pathlib.Path,
         default=pathlib.Path(
-            "/data1/ytg/retrogp/ChemProjector-main/data/processed/all/matrix_20251007.pkl"
+            "/data1/ytg/retrogp/ChemProjector-main/data/processed/all/matrix_building_20251007.pkl"
         ),
         help="ChemProjector matrix cache produced by create_reaction_matrix.py",
     )
@@ -47,7 +47,7 @@ def main():
         "--out",
         type=pathlib.Path,
         default=pathlib.Path(
-            "/data1/ytg/retrogp/ChemProjector-main/data/processed/all/enamine_hb_matched_20251007.smi"
+            "/data1/ytg/retrogp/ChemProjector-main/data/processed/all/enamine_hb_matched_building_20251007.smi"
         ),
         help="Output SMILES file (matched building blocks)",
     )
