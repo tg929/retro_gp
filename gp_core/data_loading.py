@@ -52,10 +52,10 @@ def load_targets(path: Union[str, Path], limit: Optional[int] = None) -> List[st
     return t if limit is None else t[:limit]
 
 
-def load_world_from_data(limit_targets: Optional[int] = None):
+def load_inventory_and_templates():
+    """Load purchasable inventory and reaction templates from the default data folder."""
     root = config.data_root
     bb_root = root / "building_block"
-    tgt_root = root / "target molecular"
 
     # Build inventory from everything in building_block (smi/txt/csv), letting users reshuffle datasets freely
     inv_files = sorted(
@@ -66,18 +66,6 @@ def load_world_from_data(limit_targets: Optional[int] = None):
         raise FileNotFoundError(f"No inventory files found in {bb_root}")
 
     templates_path = root / "reaction_template" / "hb.txt"
-    # Prefer test_chembl/enamine targets if present; otherwise fall back to existing small/text sets
-    target_priority = [
-        tgt_root / "chembl_small.txt",
-        tgt_root / "test_chembl.csv",
-        tgt_root / "enamine_smiles_1k.csv",
-        tgt_root / "test_synthesis.csv",
-        
-        tgt_root / "chembl.txt",
-    ]
-    targets_path = next((p for p in target_priority if p.exists()), None)
-    if targets_path is None:
-        raise FileNotFoundError(f"No target files found in {tgt_root}")
 
     inventory = load_inventory_from_files(inv_files)
     reg = load_retro_templates(
@@ -86,5 +74,4 @@ def load_world_from_data(limit_targets: Optional[int] = None):
         reverse_sides=True,
         keep_multi_product=False,
     )
-    targets = load_targets(targets_path, limit=limit_targets)
-    return inventory, reg, targets
+    return inventory, reg

@@ -20,6 +20,7 @@ from typing import Any, Dict
 
 def default_settings(include_stats: bool = False) -> Dict[str, Any]:
     from gp_core import config
+    from gp_core.data_loading import load_inventory_and_templates
     from gp_retro_feas import ExecutePolicy
 
     data: Dict[str, Any] = {
@@ -47,13 +48,27 @@ def default_settings(include_stats: bool = False) -> Dict[str, Any]:
     }
 
     if include_stats:
-        from gp_core.data_loading import load_world_from_data
+        import yaml
+
         try:
-            inventory, reg, targets = load_world_from_data()
+            inventory, reg = load_inventory_and_templates()
+            # Targets are now defined via YAML config (DemoA/B/C/D style)
+            tgt_cfg = config.data_root / "target molecular" / "config.yaml"
+            num_targets = 0
+            if tgt_cfg.exists():
+                with tgt_cfg.open("r", encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                if isinstance(cfg, dict):
+                    for entry in cfg.values():
+                        if isinstance(entry, dict) and (
+                            "target_smi" in entry or "target" in entry
+                        ):
+                            num_targets += 1
+
             data["stats"] = {
                 "inventory_size": len(list(inventory)),
-                "num_templates": len(reg.templates),
-                "num_targets": len(targets),
+                "num_templates": len(getattr(reg, "templates", reg)),
+                "num_targets": num_targets,
             }
         except Exception as e:  # pragma: no cover
             data["stats_error"] = f"{type(e).__name__}: {e}"

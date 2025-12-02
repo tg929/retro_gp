@@ -1,9 +1,13 @@
 """Run GP search on real data using modular gp_core helpers."""
+import argparse
 import sys
 from pathlib import Path
+from typing import List, Tuple
+
+import yaml
 
 from gp_core import config
-from gp_core.data_loading import load_world_from_data
+from gp_core.data_loading import load_inventory_and_templates
 from gp_core.templates import template_ids
 from gp_core.executor import make_executor
 from gp_core.fitness import build_objectives, build_scscore_fn, make_evaluator
@@ -32,14 +36,53 @@ def make_audit_fn(stock, target_smiles: str):
     return audit_route
 
 
-def run():
-    inventory, reg, targets = load_world_from_data(limit_targets=None)
+def _load_targets_from_yaml(config_path: Path) -> List[Tuple[str, str]]:
+    """Load named target SMILES from a YAML config (DemoA/B/C/D style)."""
+    if not config_path.exists():
+        raise FileNotFoundError(f"Target config not found: {config_path}")
+    with config_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    targets: List[Tuple[str, str]] = []
+    if isinstance(data, dict):
+        for name, entry in data.items():
+            if not isinstance(entry, dict):
+                continue
+            smi = entry.get("target_smi") or entry.get("target")
+            if smi:
+                targets.append((str(name), str(smi)))
+    if not targets:
+        raise ValueError(f"No targets with 'target_smi' found in {config_path}")
+    return targets
+
+
+def run(target_key: str = "all"):
+    inventory, reg = load_inventory_and_templates()
     sc_fn = build_scscore_fn()
     specs = build_objectives(config.objective_weights)
     hist = MetricsHistory()
 
-    max_targets = 10
-    n_targets = min(max_targets, len(targets))
+    # Load targets from YAML config (DemoA/B/C/D style)
+    target_cfg_path = config.data_root / "target molecular" / "config.yaml"
+    all_targets = _load_targets_from_yaml(target_cfg_path)
+
+    # Filter by requested target key
+    if target_key and target_key.lower() != "all":
+        filtered = [
+            (name, smi)
+            for (name, smi) in all_targets
+            if name.lower() == target_key.lower()
+        ]
+        if not filtered:
+            available = ", ".join(name for name, _ in all_targets)
+            raise ValueError(
+                f"Target '{target_key}' not found in {target_cfg_path}. "
+                f"Available keys: {available} (or 'all')."
+            )
+        targets_named = filtered
+    else:
+        targets_named = all_targets
+
+    n_targets = len(targets_named)
 
     def _progress(current: int, total: int):
         """Print a simple progress bar to the real terminal (not the log)."""
@@ -56,9 +99,9 @@ def run():
             flush=True,
         )
 
-    for ti, target in enumerate(targets[:n_targets]):
+    for ti, (name, target) in enumerate(targets_named):
         _progress(ti, n_targets)
-        print(f"\n=== Target {ti+1}: {target} ===")
+        print(f"\n=== Target {ti+1}/{n_targets} ({name}): {target} ===")
 
         # 针对当前目标先做一次可行动作掩码，避免全部落空
         mask = ActionMaskBuilder(reg, inventory=inventory).build(target)
@@ -116,11 +159,20 @@ if __name__ == "__main__":
     ts = datetime.now().strftime("%m%d%H%M")
     log_path = log_dir / f"run_real_data_gp_output_{ts}.txt"
 
+    parser = argparse.ArgumentParser(description="Run GP search on real data targets.")
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="all",
+        help="Target key from data/target molecular/config.yaml (e.g., DemoA) or 'all'.",
+    )
+    args = parser.parse_args()
+
     # 将所有 print 输出重定向到日志文件；进度条单独写到 sys.__stdout__
     with log_path.open("w", encoding="utf-8") as _f:
         _orig_out, _orig_err = sys.stdout, sys.stderr
         sys.stdout = sys.stderr = _f
         try:
-            run()
+            run(target_key=args.target)
         finally:
             sys.stdout, sys.stderr = _orig_out, _orig_err
