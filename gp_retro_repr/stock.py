@@ -11,7 +11,11 @@ class Inventory:
             self.add_many(purchasable)
 
     def add(self, smi: str) -> None:
-        self._set.add(canonical_smiles(smi))
+        try:
+            self._set.add(canonical_smiles(smi))
+        except Exception:
+            # Skip invalid SMILES in inventory files; they cannot be purchasable anyway.
+            return
 
     def add_many(self, smis: Iterable[str]) -> None:
         for s in smis:

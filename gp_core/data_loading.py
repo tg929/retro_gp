@@ -52,16 +52,41 @@ def load_targets(path: Union[str, Path], limit: Optional[int] = None) -> List[st
     return t if limit is None else t[:limit]
 
 
-def load_inventory_and_templates():
-    """Load purchasable inventory and reaction templates from the default data folder."""
+def load_inventory_and_templates(
+    files: Optional[Sequence[Union[str, Path]]] = None,
+) -> Inventory:
+    """Load purchasable inventory and reaction templates.
+
+    If `files` is provided, only those building block files (relative to
+    data_root / \"building_block\") are used. Otherwise, all .smi/.txt/.csv
+    under the building_block folder are included.
+    """
     root = config.data_root
     bb_root = root / "building_block"
 
-    # Build inventory from everything in building_block (smi/txt/csv), letting users reshuffle datasets freely
-    inv_files = sorted(
-        p for p in bb_root.glob("*")
-        if p.suffix.lower() in {".smi", ".txt", ".csv"}
-    )
+    if files:
+        inv_files = []
+        for f in files:
+            p = Path(f)
+            if not p.is_absolute():
+                p = bb_root / p
+            if not p.exists():
+                # Special-case fallback for EvoRRP naming mismatch
+                if p.name == "building_block_dataset.txt":
+                    alt = p.with_name("building_blocks_dataset.txt")
+                    if alt.exists():
+                        p = alt
+                    else:
+                        raise FileNotFoundError(f"Inventory file not found: {p}")
+                else:
+                    raise FileNotFoundError(f"Inventory file not found: {p}")
+            inv_files.append(p)
+    else:
+        inv_files = sorted(
+            p for p in bb_root.glob("*")
+            if p.suffix.lower() in {".smi", ".txt", ".csv"}
+        )
+
     if not inv_files:
         raise FileNotFoundError(f"No inventory files found in {bb_root}")
 

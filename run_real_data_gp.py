@@ -36,27 +36,32 @@ def make_audit_fn(stock, target_smiles: str):
     return audit_route
 
 
-def _load_targets_from_yaml(config_path: Path) -> List[Tuple[str, str]]:
-    """Load named target SMILES from a YAML config (DemoA/B/C/D style)."""
+def _load_targets_from_yaml(config_path: Path):
+    """Load named target SMILES (and optional building block dataset) from YAML."""
     if not config_path.exists():
         raise FileNotFoundError(f"Target config not found: {config_path}")
     with config_path.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
-    targets: List[Tuple[str, str]] = []
+    targets = []
     if isinstance(data, dict):
         for name, entry in data.items():
             if not isinstance(entry, dict):
                 continue
             smi = entry.get("target_smi") or entry.get("target")
             if smi:
-                targets.append((str(name), str(smi)))
+                targets.append(
+                    {
+                        "name": str(name),
+                        "smiles": str(smi),
+                        "building_block_dataset": entry.get("building_block_dataset"),
+                    }
+                )
     if not targets:
         raise ValueError(f"No targets with 'target_smi' found in {config_path}")
     return targets
 
 
 def run(target_key: str = "all"):
-    inventory, reg = load_inventory_and_templates()
     sc_fn = build_scscore_fn()
     specs = build_objectives(config.objective_weights)
     hist = MetricsHistory()
@@ -68,12 +73,10 @@ def run(target_key: str = "all"):
     # Filter by requested target key
     if target_key and target_key.lower() != "all":
         filtered = [
-            (name, smi)
-            for (name, smi) in all_targets
-            if name.lower() == target_key.lower()
+            t for t in all_targets if t["name"].lower() == target_key.lower()
         ]
         if not filtered:
-            available = ", ".join(name for name, _ in all_targets)
+            available = ", ".join(t["name"] for t in all_targets)
             raise ValueError(
                 f"Target '{target_key}' not found in {target_cfg_path}. "
                 f"Available keys: {available} (or 'all')."
@@ -85,22 +88,34 @@ def run(target_key: str = "all"):
     n_targets = len(targets_named)
 
     def _progress(current: int, total: int):
-        """Print a simple progress bar to the real terminal (not the log)."""
+        """Print a final progress bar to the real terminal (not the log)."""
         if total <= 0:
             return
         bar_width = 30
-        frac = max(0.0, min(1.0, current / total))
-        filled = int(bar_width * frac)
-        bar = "#" * filled + "-" * (bar_width - filled)
+        # For your preference, show a bar made of '-' only.
+        bar = "-" * bar_width
         print(
-            f"\rProgress: [{bar}] {current}/{total} targets",
-            end="",
+            f"Progress: [{bar}] {current}/{total} targets",
             file=sys.__stdout__,
             flush=True,
         )
 
-    for ti, (name, target) in enumerate(targets_named):
-        _progress(ti, n_targets)
+    # Cache inventories/templates per building block dataset to avoid re-loading
+    inv_reg_cache = {}
+
+    for ti, tinfo in enumerate(targets_named):
+        name = tinfo["name"]
+        target = tinfo["smiles"]
+        bb_ds = tinfo.get("building_block_dataset")
+
+        cache_key = bb_ds or "__all__"
+        if cache_key not in inv_reg_cache:
+            files = [bb_ds] if bb_ds else None
+            inventory, reg = load_inventory_and_templates(files=files)
+            inv_reg_cache[cache_key] = (inventory, reg)
+        else:
+            inventory, reg = inv_reg_cache[cache_key]
+
         print(f"\n=== Target {ti+1}/{n_targets} ({name}): {target} ===")
 
         # 针对当前目标先做一次可行动作掩码，避免全部落空
@@ -141,9 +156,8 @@ def run(target_key: str = "all"):
             )
             print(ind["route"].to_json())
 
-    # 完成所有目标后，打印一次完整进度并换行
+    # 完成所有目标后，打印一次完整进度
     _progress(n_targets, n_targets)
-    print(file=sys.__stdout__)
 
     if hist.has_updates:
         stats = hist.metrics(budget=config.pop_size * config.generations)
