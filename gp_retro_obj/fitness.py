@@ -112,6 +112,33 @@ def _qed_or_none(smiles: str) -> Optional[float]:
     except Exception:
         return None
 
+
+def _heavy_atom_count(smiles: str) -> int:
+    """Return heavy atom count if RDKit is available; otherwise use a crude proxy."""
+    if not _HAS_RDKIT:
+        # Rough proxy: 1 heavy atom per 3 characters (avoid zero)
+        return max(1, len(smiles) // 3)
+    m = Chem.MolFromSmiles(smiles)
+    if m is None:
+        return 0
+    try:
+        return int(m.GetNumHeavyAtoms())
+    except Exception:
+        return 0
+
+
+def _ring_count(smiles: str) -> int:
+    """Return ring count using RDKit; 0 if unavailable or invalid."""
+    if not _HAS_RDKIT:
+        return 0
+    m = Chem.MolFromSmiles(smiles)
+    if m is None:
+        return 0
+    try:
+        return int(m.GetRingInfo().NumRings())
+    except Exception:
+        return 0
+
 # ---- RouteFitnessEvaluator --------------------------------------------------
 
 class RouteFitnessEvaluator:
@@ -178,6 +205,50 @@ class RouteFitnessEvaluator:
                 penalty += float(self.scscore_fn(smi))
         return -penalty
 
+    def _fragment_score(self, molset: Iterable[str]) -> float:
+        """Penalize tiny fragments in the frontier (soft constraint).
+
+        For each molecule, if heavy-atom count < n_min, accumulate the gap.
+        Return negative penalty so that higher is better.
+        """
+        n_min = 6  # target minimum heavy atoms; tweak as needed
+        penalty = 0.0
+        for smi in molset:
+            n = _heavy_atom_count(smi)
+            if n <= 0:
+                continue
+            gap = max(0, n_min - n)
+            penalty += float(gap)
+        return -penalty
+
+    def _step_smoothness(self, route: Any) -> float:
+        """Step-level penalty inspired by AutoSynRoute.
+
+        For each step, measure ring-count change and SMILES-length change between
+        product and reactants. Large discontinuities get penalized.
+        Returns negative penalty so that higher is better.
+        """
+        steps = getattr(route, "steps", None)
+        if not steps:
+            return 0.0
+        c_rings = 1.0
+        c_size = 0.05
+        penalty = 0.0
+        for st in steps:
+            try:
+                product = getattr(st, "product", None)
+                reactants = getattr(st, "reactants", None)
+                if not product or not reactants:
+                    continue
+                input_smi = str(product)
+                output_smi = ".".join(reactants)
+                dr = abs(_ring_count(output_smi) - _ring_count(input_smi))
+                ds = abs(len(output_smi) - len(input_smi))
+                penalty += c_rings * float(dr) + c_size * float(ds)
+            except Exception:
+                continue
+        return -penalty
+
     def evaluate(self, route: Any) -> FitnessResult:
         report = self.audit_fn(route)  # must return expected keys
 
@@ -204,7 +275,14 @@ class RouteFitnessEvaluator:
                 purch_flags.append(0)
         purch_frac = sum(purch_flags) / max(1, len(purch_flags))
 
-        # 3) QED or other property oracles on target molecule (if provided)
+        # 3) Fragmentation-related scores on the frontier (current_set)
+        fragment_score = self._fragment_score(current_set)
+        n_components = float(len(current_set))
+
+        # 4) Step-level smoothness: penalize drastic per-step changes
+        step_smoothness = self._step_smoothness(route)
+
+        # 5) QED or other property oracles on target molecule (if provided)
         prop_vals: Dict[str, Optional[float]] = {}
         tsmi = self.target_smiles
         for name, oracle in self.property_oracles.items():
@@ -225,6 +303,11 @@ class RouteFitnessEvaluator:
         objs['sc_partial_reward'] = float(sc_partial)
         # More purchasable in current set => better
         objs['purch_frac'] = float(purch_frac)
+        # Penalize tiny fragments and many frontier components
+        objs['fragment_score'] = float(fragment_score)
+        objs['n_components'] = float(n_components)
+        # Penalize drastic per-step changes (higher is smoother)
+        objs['step_smoothness'] = float(step_smoothness)
 
         # Add property oracles (maximize by default)
         for k, v in prop_vals.items():

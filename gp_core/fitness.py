@@ -38,6 +38,10 @@ def build_objectives(weights: Dict[str, float]) -> Dict[str, ObjectiveSpec]:
         "sc_partial_reward": ObjectiveSpec("sc_partial_reward", "max", weight=weights.get("sc_partial_reward", 1.0)),
         "purch_frac": ObjectiveSpec("purch_frac", "max", weight=weights.get("purch_frac", 1.0)),
         "qed": ObjectiveSpec("qed", "max", weight=weights.get("qed", 1.0)),
+        # Prefer routes whose frontier has fewer/smaller fragments
+        "fragment_score": ObjectiveSpec("fragment_score", "max", weight=weights.get("fragment_score", 1.0)),
+        "n_components": ObjectiveSpec("n_components", "min", weight=weights.get("n_components", 1.0)),
+        "step_smoothness": ObjectiveSpec("step_smoothness", "max", weight=weights.get("step_smoothness", 0.5)),
     }
 
 

@@ -21,6 +21,10 @@ objective_weights = {
     "sc_partial_reward": 1.0,
     "purch_frac": 3.0,
     "qed": 1.0,
+    # New: fragmentation / smoothness related terms
+    "fragment_score": 2.0,     # reward fewer/less tiny fragments in frontier
+    "n_components": 1.0,       # penalize many frontier components
+    "step_smoothness": 0.5,    # prefer templates with gentle size/ring changes
 }
 
 # Non-empty bonus to avoid empty programs dominating
