@@ -166,7 +166,8 @@ class RouteFitnessEvaluator:
                  scscore_fn: Optional[Callable[[str], float]] = None,
                  target_smiles: Optional[str] = None,
                  property_oracles: Optional[Dict[str, Callable[[str], Optional[float]]]] = None,
-                 llm_style_scalar: bool = False):
+                 llm_style_scalar: bool = False,
+                 partial_reward_fn: Optional[Callable[[Iterable[str], Callable[[str], bool], Callable[[str], float]], float]] = None):
         self.specs = objective_specs
         feas, reprm = _try_import_gp_modules()
 
@@ -188,6 +189,8 @@ class RouteFitnessEvaluator:
         self.scscore_fn = scscore_fn or _fallback_scscore
         self.target_smiles = target_smiles
         self.llm_style_scalar = llm_style_scalar
+        # Optional override for partial reward (e.g., multi-score implementation)
+        self.partial_reward_fn = partial_reward_fn
 
         # default oracles: QED on the target
         self.property_oracles = property_oracles or {}
@@ -264,7 +267,16 @@ class RouteFitnessEvaluator:
             current_set = list(report.get('current_molecule_set', molset_at_invalid))
 
         # 1) Partial reward (SCScore) at the first invalid step
-        sc_partial = self._sc_partial_reward(current_set if not is_solved else [])
+        if is_solved:
+            sc_partial = 0.0
+        else:
+            try:
+                if self.partial_reward_fn is not None:
+                    sc_partial = float(self.partial_reward_fn(current_set, self.purchasable_fn, self.scscore_fn))
+                else:
+                    sc_partial = self._sc_partial_reward(current_set)
+            except Exception:
+                sc_partial = self._sc_partial_reward(current_set)
 
         # 2) Fraction purchasable in the current set (progress proxy)
         purch_flags: List[int] = []

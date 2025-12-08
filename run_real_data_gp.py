@@ -10,11 +10,15 @@ from gp_core import config
 from gp_core.data_loading import load_inventory_and_templates
 from gp_core.templates import template_ids
 from gp_core.executor import make_executor
-from gp_core.fitness import build_objectives, build_scscore_fn, make_evaluator
+from gp_core.fitness import (
+    build_objectives,
+    build_scscore_with_cache,
+    build_partial_reward,
+    make_evaluator,
+)
 from gp_core.search import run_gp_for_target
 from gp_core.metrics import MetricsHistory
-from gp_retro_obj import RouteFitnessEvaluator
-from gp_retro_feas import FeasibleExecutor, ActionMaskBuilder
+from gp_retro_feas import ActionMaskBuilder
 
 
 def make_audit_fn(stock, target_smiles: str):
@@ -62,7 +66,13 @@ def _load_targets_from_yaml(config_path: Path):
 
 
 def run(target_key: str = "all"):
-    sc_fn = build_scscore_fn()
+    # Ensure log directory exists before any cache writes
+    Path("logs").mkdir(exist_ok=True)
+    # SCScore + partial reward (multi-score if available)
+    sc_fn, sc_cache = build_scscore_with_cache(
+        cache_path=str(Path("logs") / "scscore_cache.jsonl")
+    )
+    partial_reward_fn = build_partial_reward(sc_fn, cache=sc_cache)
     specs = build_objectives(config.objective_weights)
     hist = MetricsHistory()
 
@@ -133,7 +143,14 @@ def run(target_key: str = "all"):
 
         exe: FeasibleExecutor = make_executor(reg, inventory)
         audit_fn = make_audit_fn(inventory, target)
-        evaluator: RouteFitnessEvaluator = make_evaluator(specs, inventory, audit_fn, sc_fn, target)
+        evaluator = make_evaluator(
+            specs,
+            inventory,
+            audit_fn,
+            sc_fn,
+            target,
+            partial_reward_fn=partial_reward_fn,
+        )
 
         population, hist = run_gp_for_target(
             target=target,
