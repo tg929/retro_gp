@@ -54,6 +54,7 @@ def load_targets(path: Union[str, Path], limit: Optional[int] = None) -> List[st
 
 def load_inventory_and_templates(
     files: Optional[Sequence[Union[str, Path]]] = None,
+    templates_path: Optional[Union[str, Path]] = None,
 ) -> Inventory:
     """Load purchasable inventory and reaction templates.
 
@@ -90,7 +91,11 @@ def load_inventory_and_templates(
     if not inv_files:
         raise FileNotFoundError(f"No inventory files found in {bb_root}")
 
-    templates_path = root / "reaction_template" / "hb.txt"
+    templates_path = Path(templates_path) if templates_path else (root / "reaction_template" / "hb.txt")
+    if not templates_path.is_absolute():
+        templates_path = root / templates_path
+    if not templates_path.exists():
+        raise FileNotFoundError(f"Template file not found: {templates_path}")
 
     inventory = load_inventory_from_files(inv_files)
     reg = load_retro_templates(

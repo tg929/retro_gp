@@ -65,7 +65,10 @@ def _load_targets_from_yaml(config_path: Path):
     return targets
 
 
-def run(target_key: str = "all"):
+from typing import Optional
+
+
+def run(target_key: str = "all", template_file: Optional[str] = None):
     # Ensure log directory exists before any cache writes
     Path("logs").mkdir(exist_ok=True)
     # SCScore + partial reward (multi-score if available)
@@ -121,7 +124,7 @@ def run(target_key: str = "all"):
         cache_key = bb_ds or "__all__"
         if cache_key not in inv_reg_cache:
             files = [bb_ds] if bb_ds else None
-            inventory, reg = load_inventory_and_templates(files=files)
+            inventory, reg = load_inventory_and_templates(files=files, templates_path=template_file)
             inv_reg_cache[cache_key] = (inventory, reg)
         else:
             inventory, reg = inv_reg_cache[cache_key]
@@ -161,6 +164,7 @@ def run(target_key: str = "all"):
             template_pool=full_pool,     # 搜索空间：全量
             init_templates=init_pool,    # 初始化偏好：局部可行
             history=hist,
+            feasible_templates_for_target=mask.feasible_templates or None,
         )
 
         print("Top solutions:")
@@ -197,6 +201,12 @@ if __name__ == "__main__":
         default="all",
         help="Target key from data/target molecular/config.yaml (e.g., DemoA) or 'all'.",
     )
+    parser.add_argument(
+        "--templates",
+        type=str,
+        default=None,
+        help="Optional path to template file (relative to data/ or absolute). Default: data/reaction_template/hb.txt",
+    )
     args = parser.parse_args()
 
     # 将所有 print 输出重定向到日志文件；进度条单独写到 sys.__stdout__
@@ -204,6 +214,6 @@ if __name__ == "__main__":
         _orig_out, _orig_err = sys.stdout, sys.stderr
         sys.stdout = sys.stderr = _f
         try:
-            run(target_key=args.target)
+            run(target_key=args.target, template_file=args.templates)
         finally:
             sys.stdout, sys.stderr = _orig_out, _orig_err

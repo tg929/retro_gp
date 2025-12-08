@@ -44,6 +44,7 @@ def run_gp_for_target(
     init_templates: Optional[List[str]] = None,  # New: specific templates for initialization
     history: Optional[MetricsHistory] = None,
     nonempty_bonus: float = config.nonempty_bonus,
+    feasible_templates_for_target: Optional[List[str]] = None,
 ):
     random.seed(seed)
     template_pool = template_pool or list(reg.templates.keys())
@@ -97,7 +98,7 @@ def run_gp_for_target(
             new_children = []
             for ch in children:
                 if random.random() < p_mutation:
-                    ch = mutate_program(ch, template_pool)
+                    ch = mutate_program(ch, template_pool, feasible_templates=feasible_templates_for_target)
                 new_children.append(ch)
 
             for ch in new_children:

@@ -1,6 +1,6 @@
 """Program construction and genetic operators."""
 import random
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from gp_retro_repr import Program, Select, ApplyTemplate, Stop
 from . import config
@@ -46,16 +46,19 @@ def mutate_program(
     p_delete=0.25,
     p_modify=0.35,
     max_total_len: int = config.max_templates_per_prog,
+    feasible_templates: Optional[List[str]] = None,
 ) -> Program:
     t = templates_of_program(p)
+    # Prefer chemistry-checked templates when provided (from feasible mask on target)
+    pool_for_insert = feasible_templates or template_pool
     op = random.random()
     if op < p_insert and len(t) < max_total_len:
         pos = random.randint(0, len(t))
-        t.insert(pos, random.choice(template_pool))
+        t.insert(pos, random.choice(pool_for_insert))
     elif op < p_insert + p_delete and len(t) > 0:
         pos = random.randrange(len(t))
         t.pop(pos)
     elif len(t) > 0:
         pos = random.randrange(len(t))
-        t[pos] = random.choice(template_pool)
+        t[pos] = random.choice(pool_for_insert)
     return program_from_templates(t)
