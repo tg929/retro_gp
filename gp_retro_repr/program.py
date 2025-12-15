@@ -24,6 +24,17 @@ class ApplyTemplate(Instruction):
     rational: str = ""
 
 @dataclass(frozen=True)
+class ApplyOneStepModel(Instruction):
+    """Apply a one-step retrosynthesis model to the last selected product.
+
+    The executor decides which concrete model to call; `rank` selects which
+    candidate (0-based) to take from the model's top-k list.
+    """
+
+    rank: int = 0
+    rational: str = ""
+
+@dataclass(frozen=True)
 class Stop(Instruction):
     pass
 

@@ -9,3 +9,5 @@ LLM-Syn-Planner-main/*
 *.smi
 EvoRRP-main/*
 AutoSynRoute-master/*
+reaction_prediction_seq2seq-master/*
+jul_5_2017_1/*

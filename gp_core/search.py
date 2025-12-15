@@ -45,6 +45,9 @@ def run_gp_for_target(
     history: Optional[MetricsHistory] = None,
     nonempty_bonus: float = config.nonempty_bonus,
     feasible_templates_for_target: Optional[List[str]] = None,
+    allow_model_actions: bool = False,
+    model_rank_pool: Optional[List[int]] = None,
+    p_model_action: float = 0.0,
 ):
     random.seed(seed)
     template_pool = template_pool or list(reg.templates.keys())
@@ -62,6 +65,9 @@ def run_gp_for_target(
             init_templates if random.random() < 0.8 else template_pool,
             min_len=1,
             max_len=config.max_templates_per_prog,
+            allow_model_actions=allow_model_actions,
+            model_rank_pool=model_rank_pool,
+            p_model_action=p_model_action,
         )
         ind = evaluate_program(prog, exe, evaluator, target)
         if nonempty_bonus and getattr(ind["route"], "steps", []):
@@ -98,7 +104,14 @@ def run_gp_for_target(
             new_children = []
             for ch in children:
                 if random.random() < p_mutation:
-                    ch = mutate_program(ch, template_pool, feasible_templates=feasible_templates_for_target)
+                    ch = mutate_program(
+                        ch,
+                        template_pool,
+                        feasible_templates=feasible_templates_for_target,
+                        allow_model_actions=allow_model_actions,
+                        model_rank_pool=model_rank_pool,
+                        p_model_action=p_model_action,
+                    )
                 new_children.append(ch)
 
             for ch in new_children:

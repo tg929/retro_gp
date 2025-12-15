@@ -17,5 +17,5 @@ from .stock import Inventory
 from .templates import ReactionTemplate, ReactionTemplateRegistry
 from .step import RetrosynthesisStep
 from .route import Route
-from .program import Instruction, Select, ApplyTemplate, Stop, Program, ExecutionConfig
+from .program import Instruction, Select, ApplyTemplate, ApplyOneStepModel, Stop, Program, ExecutionConfig
 from .validation import MoleculeChecks, ReactionChecks, RouteChecks

@@ -3,10 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 
-from gp_retro_repr import Program, Route, Select, ApplyTemplate, Stop, RetrosynthesisStep
+from gp_retro_repr import Program, Route, Select, ApplyTemplate, ApplyOneStepModel, Stop, RetrosynthesisStep
 from gp_retro_repr import ReactionTemplateRegistry, Inventory
 from .mask import ActionMaskBuilder
 from .engine import FeasibilityEngine
+
+try:  # optional dependency
+    from gp_retro_nn import OneStepRetrosynthesisModel
+except Exception:  # pragma: no cover
+    OneStepRetrosynthesisModel = None  # type: ignore
 
 @dataclass(frozen=True)
 class ExecutePolicy:
@@ -17,6 +22,8 @@ class ExecutePolicy:
     max_reactants: Optional[int] = None
     repair_on_failure: bool = True  # if selected template fails, try other feasible templates
     stop_when_all_purchasable: bool = True  # early-stop route once all molecules are purchasable
+    one_step_topk: int = 10  # how many candidates to request from one-step model
+    one_step_repair: bool = True  # if selected rank fails, try other ranks
 
 class FeasibleExecutor:
     """
@@ -24,13 +31,20 @@ class FeasibleExecutor:
       - Only accept ApplyTemplate that passes applicability (and optionally inventory gating)
       - If the chosen template fails, optionally repair by choosing another feasible template
     """
-    def __init__(self, reg: ReactionTemplateRegistry, inventory: Optional[Inventory] = None, policy: Optional[ExecutePolicy] = None):
+    def __init__(
+        self,
+        reg: ReactionTemplateRegistry,
+        inventory: Optional[Inventory] = None,
+        policy: Optional[ExecutePolicy] = None,
+        one_step_model: Optional["OneStepRetrosynthesisModel"] = None,
+    ):
         self.reg = reg
         self.inventory = inventory
         # Default policy must exist even if caller passes None (bug fix).
         self.policy = policy or ExecutePolicy()
         self.mask_builder = ActionMaskBuilder(reg, inventory=inventory)
         self.engine = FeasibilityEngine(reg, inventory=inventory)
+        self.one_step_model = one_step_model
 
     def execute(self, program: Program, target_smiles: str) -> Route:
         route = Route()
@@ -94,6 +108,83 @@ class FeasibleExecutor:
 
                 # Early stopping: if at any point all molecules are purchasable
                 # we treat the route as complete and ignore remaining instructions.
+                if (
+                    self.policy.stop_when_all_purchasable
+                    and self.inventory is not None
+                    and molecule_set
+                    and all(self.inventory.is_purchasable(m) for m in molecule_set)
+                ):
+                    break
+                continue
+
+            if isinstance(instr, ApplyOneStepModel):
+                if self.one_step_model is None:
+                    raise RuntimeError("ApplyOneStepModel encountered but no one_step_model was provided to FeasibleExecutor")
+                if last_selected is None or last_selected < 0 or last_selected >= len(molecule_set):
+                    raise IndexError("Select index invalid before ApplyOneStepModel")
+
+                product = molecule_set[last_selected]
+                preds = self.one_step_model.predict(product, topk=int(self.policy.one_step_topk))
+                if not preds:
+                    raise RuntimeError(f"One-step model produced no candidates for product={product}")
+
+                # Choose requested rank; optionally repair by searching other ranks
+                rank0 = max(0, int(instr.rank))
+                rank_order = [rank0] + [i for i in range(len(preds)) if i != rank0]
+                if not self.policy.one_step_repair:
+                    rank_order = [rank0]
+
+                chosen = None
+                chosen_rank = None
+                chosen_reason = ""
+                for r in rank_order:
+                    if r < 0 or r >= len(preds):
+                        continue
+                    cand = preds[r]
+                    reactants = list(cand.reactants or [])
+                    reactants = [s for s in reactants if s]
+                    if not reactants:
+                        chosen_reason = "empty_reactants"
+                        continue
+                    if self.policy.max_reactants is not None and len(reactants) > int(self.policy.max_reactants):
+                        chosen_reason = "exceed_max_reactants"
+                        continue
+                    if self.policy.require_all_purchasable and self.inventory is not None:
+                        if not all(self.inventory.is_purchasable(s) for s in reactants):
+                            chosen_reason = "inventory_violation"
+                            continue
+                    chosen = cand
+                    chosen_rank = r
+                    chosen_reason = "ok"
+                    break
+
+                if chosen is None:
+                    raise RuntimeError(
+                        f"One-step model candidates rejected for product={product}, "
+                        f"requested_rank={rank0}, reason={chosen_reason}"
+                    )
+
+                updated = [m for i, m in enumerate(molecule_set) if i != last_selected] + list(chosen.reactants)
+                step = RetrosynthesisStep(
+                    molecule_set=molecule_set.copy(),
+                    rational=instr.rational,
+                    product=product,
+                    template_id=f"{getattr(self.one_step_model, 'name', 'one_step')}@rank={chosen_rank}",
+                    reactants=list(chosen.reactants),
+                    updated_molecule_set=updated,
+                    diagnostics={
+                        "executor_reason": chosen_reason,
+                        "one_step_score": chosen.score,
+                        "one_step_meta": dict(getattr(chosen, "meta", {}) or {}),
+                        "one_step_requested_rank": rank0,
+                        "one_step_chosen_rank": chosen_rank,
+                        "one_step_n_candidates": len(preds),
+                    },
+                )
+                route.append(step)
+                molecule_set = updated
+                last_selected = None
+
                 if (
                     self.policy.stop_when_all_purchasable
                     and self.inventory is not None
