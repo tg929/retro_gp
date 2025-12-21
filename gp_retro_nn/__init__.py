@@ -6,5 +6,4 @@ implementations that can be plugged into `gp_retro_feas.FeasibleExecutor`.
 """
 
 from .one_step import OneStepPrediction, OneStepRetrosynthesisModel
-from .seq2seq_subprocess import Seq2SeqSubprocessModel, Seq2SeqSubprocessConfig
-
+from .nag2g_subprocess import NAG2GSubprocessConfig, NAG2GSubprocessModel
