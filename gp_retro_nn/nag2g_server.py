@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import configparser
 import json
 import os
 import sys
@@ -92,6 +94,119 @@ def _g2g_weight_reload(state: Dict[str, Any]) -> Dict[str, Any]:
     return state
 
 
+def _coerce_ini_value(raw: str, current: Any) -> Any:
+    """Best-effort type coercion for values loaded from NAG2G config.ini."""
+    if raw is None:
+        return current
+    s = str(raw).strip()
+    if s == "" or s == "None":
+        return current
+
+    # If the current type is known, respect it.
+    if isinstance(current, bool):
+        if s in {"True", "true", "1"}:
+            return True
+        if s in {"False", "false", "0"}:
+            return False
+        return current
+    if isinstance(current, int) and not isinstance(current, bool):
+        try:
+            return int(s)
+        except Exception:
+            return current
+    if isinstance(current, float):
+        try:
+            return float(s)
+        except Exception:
+            return current
+    if isinstance(current, (list, tuple, dict)):
+        try:
+            return ast.literal_eval(s)
+        except Exception:
+            return current
+
+    # Unknown/None type: try to infer safely.
+    if s in {"True", "true"}:
+        return True
+    if s in {"False", "false"}:
+        return False
+    try:
+        if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
+            return int(s)
+    except Exception:
+        pass
+    try:
+        return float(s)
+    except Exception:
+        pass
+    try:
+        return ast.literal_eval(s)
+    except Exception:
+        return s
+
+
+def _apply_config_ini(args: Any, config_file: Path) -> Any:
+    """Apply NAG2G config.ini overrides without relying on upstream read_config()."""
+    if not config_file or not config_file.exists():
+        return args
+    cfg = configparser.ConfigParser()
+    cfg.read(str(config_file))
+    if "DEFAULT" not in cfg:
+        return args
+    # Mirror NAG2G.utils.save_config.read_config(): it intentionally does NOT
+    # override a set of runtime/IO options from config.ini (e.g., data path).
+    skip_keys = {
+        "batch_size",
+        "batch_size_valid",
+        "data",
+        "tensorboard_logdir",
+        "bf16",
+        "num_workers",
+        "required_batch_size_multiple",
+        "valid_subset",
+        "label_prob",
+        "mid_prob",
+        "mid_upper",
+        "mid_lower",
+        "plddt_loss_weight",
+        "pos_loss_weight",
+        "shufflegraph",
+        "infer_save_name",
+        "decoder_attn_from_loader",
+        "infer_step",
+        "config_file",
+        "path",
+        "results_path",
+        "beam_size",
+        "search_strategies",
+        "len_penalty",
+        "temperature",
+        "beam_size_second",
+        "beam_head_second",
+        "nprocs_per_node",
+        "data_buffer_size",
+        "distributed_rank",
+        "distributed_port",
+        "distributed_world_size",
+        "distributed_backend",
+        "distributed_init_method",
+        "distributed_no_spawn",
+        "lr_shrink",
+    }
+    for key, raw in cfg["DEFAULT"].items():
+        if key in skip_keys:
+            continue
+        if not hasattr(args, key):
+            continue
+        cur = getattr(args, key)
+        try:
+            setattr(args, key, _coerce_ini_value(raw, cur))
+        except Exception:
+            # Best-effort: ignore broken overrides instead of crashing the server.
+            pass
+    return args
+
+
 def _init_model(
     *,
     project_dir: Path,
@@ -114,6 +229,10 @@ def _init_model(
     fp16: bool,
 ) -> _ModelBundle:
     sys.path.insert(0, str(project_dir))
+    # Make NAG2G-main/unimol_plus importable even if not installed into site-packages.
+    unimol_plus_dir = project_dir / "unimol_plus"
+    if unimol_plus_dir.exists():
+        sys.path.insert(0, str(unimol_plus_dir))
     import NAG2G  # noqa: F401  # registers tasks/models via side effects
 
     import torch  # type: ignore
@@ -125,7 +244,6 @@ def _init_model(
         SequenceGeneratorBeamSearch,
     )
     from NAG2G.search_strategies.simple_sequence_generator import SimpleGenerator  # type: ignore
-    from NAG2G.utils import save_config  # type: ignore
 
     # Build a Unicore args Namespace with defaults via its standard CLI parser.
     parser = unicore_options.get_validation_parser()
@@ -197,7 +315,8 @@ def _init_model(
     try:
         sys.argv = argv
         args = unicore_options.parse_args_and_arch(parser)
-        args = save_config.read_config(args)
+        if config_file is not None and config_file.exists():
+            args = _apply_config_ini(args, config_file)
     finally:
         sys.argv = old_argv
 
@@ -288,6 +407,86 @@ def _predict_products(
     from unicore import utils as unicore_utils  # type: ignore
 
     mapped = [_setmap2smiles_rdkit(s) for s in product_smiles_list]
+
+    # Fast path for unimolv2: build the exact batched_data dict expected by unimol.unimolv2,
+    # without relying on NAG2G's dataset loaders (which are geared toward file-based datasets).
+    if str(getattr(bundle.args, "encoder_type", "")) == "unimolv2":
+        import numpy as np
+
+        try:
+            from rdkit import Chem  # type: ignore
+            from rdkit.Chem import AllChem  # type: ignore
+        except Exception as e:  # pragma: no cover
+            raise RuntimeError(f"RDKit is required for NAG2G unimolv2 inference: {e}")
+
+        from NAG2G.utils.graph_process import process_one  # type: ignore
+        from unimol.data.molecule_dataset import (  # type: ignore
+            get_graph_features,
+            pad_1d,
+            pad_1d_feat,
+            pad_2d,
+            pad_2d_feat,
+            pad_attn_bias,
+        )
+
+        def _coords(smiles: str) -> np.ndarray:
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return np.zeros((0, 3), dtype=np.float32)
+            try:
+                # Embed without explicit H to keep atom count aligned with process_one().
+                res = AllChem.EmbedMolecule(mol, randomSeed=int(seed), maxAttempts=2000)
+                if res == 0:
+                    try:
+                        AllChem.MMFFOptimizeMolecule(mol)
+                    except Exception:
+                        pass
+                else:
+                    AllChem.Compute2DCoords(mol)
+                pos = mol.GetConformer().GetPositions().astype(np.float32)
+            except Exception:
+                AllChem.Compute2DCoords(mol)
+                pos = mol.GetConformer().GetPositions().astype(np.float32)
+            if pos.size:
+                pos = pos - pos.mean(axis=0, keepdims=True)
+            return pos
+
+        feats = []
+        for smi in mapped:
+            item = process_one(smi)
+            feat = get_graph_features(item, N_vnode=int(getattr(bundle.args, "N_vnode", 1)))
+            pos = _coords(smi)
+            if feat["atom_feat"].shape[0] != pos.shape[0]:
+                # Fallback: keep running with zeros if coordinate generation disagrees.
+                pos = np.zeros((feat["atom_feat"].shape[0], 3), dtype=np.float32)
+            import torch  # type: ignore
+
+            feat["pos"] = torch.from_numpy(pos).float()
+            feats.append(feat)
+
+        max_node_num = max(int(f["atom_mask"].shape[0]) for f in feats) if feats else 0
+        max_node_num = (max_node_num + 1 + 3) // 4 * 4 - 1
+        n_vnode = int(getattr(bundle.args, "N_vnode", 1))
+
+        batched_data = {
+            "atom_feat": pad_1d_feat([f["atom_feat"] for f in feats], max_node_num),
+            "atom_mask": pad_1d([f["atom_mask"] for f in feats], max_node_num),
+            "edge_feat": pad_2d_feat([f["edge_feat"] for f in feats], max_node_num),
+            "shortest_path": pad_2d([f["shortest_path"] for f in feats], max_node_num),
+            "degree": pad_1d([f["degree"] for f in feats], max_node_num),
+            "pos": pad_1d_feat([f["pos"] for f in feats], max_node_num),
+            "pair_type": pad_2d_feat([f["pair_type"] for f in feats], max_node_num),
+            "attn_bias": pad_attn_bias([f["attn_bias"] for f in feats], max_node_num, n_vnode),
+        }
+
+        sample = {
+            "net_input": {"batched_data": batched_data},
+            "target": {"product_smiles": list(mapped)},
+        }
+        sample = unicore_utils.move_to_cuda(sample) if bundle.use_cuda else sample
+        return bundle.task.infer_step(sample, bundle.generator)
+
+    # Fallback: use NAG2G's empty-dataset loader for other encoder types.
     bundle.task.load_empty_dataset(init_values=mapped, seed=int(seed))
     dataset = bundle.task.dataset("test")
 
