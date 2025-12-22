@@ -147,16 +147,22 @@ class NAG2GSubprocessModel:
 
         preds: List[OneStepPrediction] = []
         raw_list = list(resp.get("raw") or [])
+        score_list = list(resp.get("scores") or [])
         reactant_lists = list(resp.get("predictions") or [])
         for rank, reactants in enumerate(reactant_lists):
             rlist = [str(x) for x in (reactants or []) if str(x)]
             if not rlist:
                 continue
             raw = raw_list[rank] if rank < len(raw_list) else None
+            score = score_list[rank] if rank < len(score_list) else None
+            try:
+                score = float(score) if score is not None else None
+            except Exception:
+                score = None
             preds.append(
                 OneStepPrediction(
                     reactants=rlist,
-                    score=None,
+                    score=score,
                     meta={"rank": rank, "raw": raw},
                 )
             )

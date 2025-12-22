@@ -403,10 +403,25 @@ def _predict_products(
     product_smiles_list: List[str],
     *,
     seed: int,
-) -> List[List[str]]:
+) -> tuple[List[List[str]], List[List[float]]]:
     from unicore import utils as unicore_utils  # type: ignore
 
     mapped = [_setmap2smiles_rdkit(s) for s in product_smiles_list]
+
+    def _score_to_float(x: Any) -> float:
+        try:
+            import torch  # type: ignore
+
+            if isinstance(x, torch.Tensor):
+                if x.numel() == 1:
+                    return float(x.detach().cpu().item())
+                return float(x.detach().cpu().float().sum().item())
+        except Exception:
+            pass
+        try:
+            return float(x)
+        except Exception:
+            return 0.0
 
     # Fast path for unimolv2: build the exact batched_data dict expected by unimol.unimolv2,
     # without relying on NAG2G's dataset loaders (which are geared toward file-based datasets).
@@ -484,7 +499,35 @@ def _predict_products(
             "target": {"product_smiles": list(mapped)},
         }
         sample = unicore_utils.move_to_cuda(sample) if bundle.use_cuda else sample
-        return bundle.task.infer_step(sample, bundle.generator)
+        if str(getattr(bundle.args, "search_strategies", "")) == "SequenceGeneratorBeamSearch":
+            from NAG2G.utils.G2G_cal import get_smiles, gen_map  # type: ignore
+            from NAG2G.utils.chemutils import add_chirality  # type: ignore
+
+            pred = bundle.generator(sample)  # List[List[Dict[str, Tensor]]]
+            out_smiles: List[List[str]] = []
+            out_scores: List[List[float]] = []
+            beam_size = int(getattr(bundle.generator, "beam_size", len(pred[0]) if pred else 0))
+            for i, gt_product in enumerate(mapped):
+                s_i: List[str] = []
+                sc_i: List[float] = []
+                for j in range(min(beam_size, len(pred[i]))):
+                    toks = pred[i][j]["tokens"].detach().cpu().numpy()
+                    toks = np.insert(toks, 0, 1)  # add BOS
+                    toks = toks[:-1]  # strip EOS
+                    tok_str = bundle.task.get_str(toks)
+                    smi = get_smiles(tok_str, atom_map=gen_map(gt_product))
+                    try:
+                        smi = add_chirality(gt_product, smi)
+                    except Exception:
+                        pass
+                    s_i.append(str(smi))
+                    sc_i.append(_score_to_float(pred[i][j].get("score")))
+                out_smiles.append(s_i)
+                out_scores.append(sc_i)
+            return out_smiles, out_scores
+
+        preds = bundle.task.infer_step(sample, bundle.generator)
+        return preds, [[] for _ in preds]
 
     # Fallback: use NAG2G's empty-dataset loader for other encoder types.
     bundle.task.load_empty_dataset(init_values=mapped, seed=int(seed))
@@ -503,9 +546,37 @@ def _predict_products(
 
     for sample in itr:
         sample = unicore_utils.move_to_cuda(sample) if bundle.use_cuda else sample
+        if str(getattr(bundle.args, "search_strategies", "")) == "SequenceGeneratorBeamSearch":
+            from NAG2G.utils.G2G_cal import get_smiles, gen_map  # type: ignore
+            from NAG2G.utils.chemutils import add_chirality  # type: ignore
+            import numpy as np
+
+            pred = bundle.generator(sample)
+            out_smiles: List[List[str]] = []
+            out_scores: List[List[float]] = []
+            beam_size = int(getattr(bundle.generator, "beam_size", len(pred[0]) if pred else 0))
+            for i, gt_product in enumerate(mapped):
+                s_i: List[str] = []
+                sc_i: List[float] = []
+                for j in range(min(beam_size, len(pred[i]))):
+                    toks = pred[i][j]["tokens"].detach().cpu().numpy()
+                    toks = np.insert(toks, 0, 1)
+                    toks = toks[:-1]
+                    tok_str = bundle.task.get_str(toks)
+                    smi = get_smiles(tok_str, atom_map=gen_map(gt_product))
+                    try:
+                        smi = add_chirality(gt_product, smi)
+                    except Exception:
+                        pass
+                    s_i.append(str(smi))
+                    sc_i.append(_score_to_float(pred[i][j].get("score")))
+                out_smiles.append(s_i)
+                out_scores.append(sc_i)
+            return out_smiles, out_scores
+
         result = bundle.task.infer_step(sample, bundle.generator)
-        return result
-    return [[] for _ in mapped]
+        return result, [[] for _ in result]
+    return [[] for _ in mapped], [[] for _ in mapped]
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -605,9 +676,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             continue
 
         try:
-            raw_preds = _predict_products(bundle, [product], seed=seed)[0]
-            # raw_preds: List[str] length == beam_size
-            raw_preds = list(raw_preds)[:topk]
+            preds, scores = _predict_products(bundle, [product], seed=seed)
+            raw_preds = list((preds[0] if preds else []))[:topk]
+            raw_scores = list((scores[0] if scores else []))[:topk]
             reactant_lists = [_split_reactants(s) for s in raw_preds]
             _jsonl_write(
                 {
@@ -616,6 +687,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "topk": topk,
                     "predictions": reactant_lists,
                     "raw": raw_preds,
+                    "scores": raw_scores,
                 }
             )
         except Exception as e:

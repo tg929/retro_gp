@@ -193,8 +193,11 @@ def run(
         # One-step StepScore: re-rank & truncate model candidates before rank selection.
         # Default: keep topB=min(20, topN) after scoring.
         topB = max(1, min(20, int(nag2g_topk)))
+        # If NAG2G provides beam scores (SequenceGeneratorBeamSearch), prefer using them
+        # instead of rank-only scoring.
+        step_score_type = "raw" if str(nag2g_search_strategies) == "SequenceGeneratorBeamSearch" else "rank"
         step_scorer = StepScorer(
-            config=StepScoreConfig(score_type="rank", topN=int(nag2g_topk), topB=topB),
+            config=StepScoreConfig(score_type=step_score_type, topN=int(nag2g_topk), topB=topB),
             bb_is_purchasable=inventory.is_purchasable,
             sa_fn=None,
             forward_model=None,
