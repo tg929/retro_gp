@@ -16,6 +16,8 @@ class NAG2GSubprocessConfig:
     data_dir: Path
     checkpoint_path: Path
     python_executable: Optional[str] = None
+    dict_name: str = "dict.txt"
+    bpe_tokenizer_path: str = "none"
     beam_size: int = 10
     search_strategies: str = "SimpleGenerator"
     len_penalty: float = 0.0
@@ -50,6 +52,10 @@ class NAG2GSubprocessModel:
             str(cfg.project_dir),
             "--data-dir",
             str(cfg.data_dir),
+            "--dict-name",
+            str(cfg.dict_name),
+            "--bpe-tokenizer-path",
+            str(cfg.bpe_tokenizer_path),
             "--checkpoint",
             str(cfg.checkpoint_path),
             "--search-strategies",

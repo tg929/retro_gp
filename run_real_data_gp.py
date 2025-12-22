@@ -10,12 +10,7 @@ from gp_core import config
 from gp_core.data_loading import load_inventory_and_templates
 from gp_core.templates import template_ids
 from gp_core.executor import make_executor
-from gp_core.fitness import (
-    build_objectives,
-    build_scscore_with_cache,
-    build_partial_reward,
-    make_evaluator,
-)
+from gp_core.scoring import GPFitnessEvaluator, StepScorer, StepScoreConfig
 from gp_core.search import run_gp_for_target
 from gp_core.metrics import MetricsHistory
 from gp_retro_feas import ActionMaskBuilder, ExecutePolicy, FeasibleExecutor
@@ -82,6 +77,8 @@ def run(
     nag2g_data_dir: Optional[str] = None,
     nag2g_checkpoint_path: Optional[str] = None,
     nag2g_python: Optional[str] = None,
+    nag2g_dict_name: str = "dict.txt",
+    nag2g_bpe_tokenizer_path: str = "none",
     nag2g_search_strategies: str = "SimpleGenerator",
     nag2g_topk: int = 10,
     nag2g_action_prob: float = 0.0,
@@ -92,12 +89,6 @@ def run(
 ):
     # Ensure log directory exists before any cache writes
     Path("logs").mkdir(exist_ok=True)
-    # SCScore + partial reward (multi-score if available)
-    sc_fn, sc_cache = build_scscore_with_cache(
-        cache_path=str(Path("logs") / "scscore_cache.jsonl")
-    )
-    partial_reward_fn = build_partial_reward(sc_fn, cache=sc_cache)
-    specs = build_objectives(config.objective_weights)
     hist = MetricsHistory()
 
     # Load targets from YAML config (DemoA/B/C/D style)
@@ -160,6 +151,8 @@ def run(
                 data_dir=data_dir,
                 checkpoint_path=ckpt,
                 python_executable=nag2g_python,
+                dict_name=str(nag2g_dict_name),
+                bpe_tokenizer_path=str(nag2g_bpe_tokenizer_path),
                 beam_size=int(nag2g_topk),
                 search_strategies=str(nag2g_search_strategies),
                 len_penalty=float(nag2g_len_penalty),
@@ -197,16 +190,29 @@ def run(
         else:
             print("No feasible templates found; fallback to full template pool.")
 
+        # One-step StepScore: re-rank & truncate model candidates before rank selection.
+        # Default: keep topB=min(20, topN) after scoring.
+        topB = max(1, min(20, int(nag2g_topk)))
+        step_scorer = StepScorer(
+            config=StepScoreConfig(score_type="rank", topN=int(nag2g_topk), topB=topB),
+            bb_is_purchasable=inventory.is_purchasable,
+            sa_fn=None,
+            forward_model=None,
+        )
+        one_step_ranker = (lambda product_smiles, preds: step_scorer.rank_and_truncate(product_smiles, preds)) if one_step_model else None
+
         policy = ExecutePolicy(one_step_topk=int(nag2g_topk))
-        exe: FeasibleExecutor = make_executor(reg, inventory, policy=policy, one_step_model=one_step_model)
-        audit_fn = make_audit_fn(inventory, target)
-        evaluator = make_evaluator(
-            specs,
+        exe: FeasibleExecutor = make_executor(
+            reg,
             inventory,
-            audit_fn,
-            sc_fn,
-            target,
-            partial_reward_fn=partial_reward_fn,
+            policy=policy,
+            one_step_model=one_step_model,
+            one_step_ranker=one_step_ranker,
+        )
+
+        evaluator = GPFitnessEvaluator(
+            target_smiles=target,
+            bb_is_purchasable=inventory.is_purchasable,
         )
 
         population, hist = run_gp_for_target(
@@ -220,7 +226,7 @@ def run(
             history=hist,
             feasible_templates_for_target=mask.feasible_templates or None,
             allow_model_actions=bool(one_step_model) and float(nag2g_action_prob) > 0.0,
-            model_rank_pool=list(range(max(1, int(nag2g_topk)))) if one_step_model else None,
+            model_rank_pool=list(range(max(1, int(topB)))) if one_step_model else None,
             p_model_action=float(nag2g_action_prob),
         )
 
@@ -289,6 +295,18 @@ if __name__ == "__main__":
         help="Python executable used to run NAG2G inference (must have torch/unicore/unimol/rdkit).",
     )
     parser.add_argument(
+        "--nag2g-dict-name",
+        type=str,
+        default="dict.txt",
+        help="Dictionary filename under --nag2g-data-dir (e.g., dict_20230310.txt).",
+    )
+    parser.add_argument(
+        "--nag2g-bpe-tokenizer-path",
+        type=str,
+        default="none",
+        help="Optional BPE tokenizer path for NAG2G (default: none).",
+    )
+    parser.add_argument(
         "--nag2g-search-strategies",
         type=str,
         default="SimpleGenerator",
@@ -343,6 +361,8 @@ if __name__ == "__main__":
                 nag2g_data_dir=args.nag2g_data_dir,
                 nag2g_checkpoint_path=args.nag2g_checkpoint,
                 nag2g_python=args.nag2g_python,
+                nag2g_dict_name=args.nag2g_dict_name,
+                nag2g_bpe_tokenizer_path=args.nag2g_bpe_tokenizer_path,
                 nag2g_search_strategies=args.nag2g_search_strategies,
                 nag2g_topk=args.nag2g_topk,
                 nag2g_action_prob=args.nag2g_action_prob,

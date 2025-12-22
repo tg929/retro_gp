@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import traceback
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -96,6 +97,7 @@ def _init_model(
     project_dir: Path,
     data_dir: Path,
     checkpoint_path: Path,
+    config_file: Optional[Path] = None,
     task_name: str,
     arch: str,
     loss_name: str,
@@ -123,17 +125,26 @@ def _init_model(
         SequenceGeneratorBeamSearch,
     )
     from NAG2G.search_strategies.simple_sequence_generator import SimpleGenerator  # type: ignore
+    from NAG2G.utils import save_config  # type: ignore
 
     # Build a Unicore args Namespace with defaults via its standard CLI parser.
     parser = unicore_options.get_validation_parser()
     add_search_strategies_args(parser)
     unicore_options.add_model_args(parser)
 
+    # Mirror NAG2G/validate.py behavior: if a config.ini is available, load it to
+    # override model hyperparameters so the architecture matches the checkpoint.
+    if config_file is None:
+        cand1 = checkpoint_path.parent / "config.ini"
+        cand2 = checkpoint_path.with_suffix(".ini")
+        if cand1.exists():
+            config_file = cand1
+        elif cand2.exists():
+            config_file = cand2
+
     argv = [
         "nag2g_server",
         str(data_dir),
-        "--user-dir",
-        str(project_dir / "NAG2G"),
         "--valid-subset",
         "test",
         "--task",
@@ -146,7 +157,8 @@ def _init_model(
         str(encoder_type),
         "--dict-name",
         str(dict_name),
-        "--bpe-tokenizer-path",
+        # Note: unicore/NAG2G CLI expects underscore option name.
+        "--bpe_tokenizer_path",
         str(bpe_tokenizer_path),
         "--path",
         str(checkpoint_path),
@@ -174,6 +186,8 @@ def _init_model(
         str(float(temperature)),
         "--infer_step",
     ]
+    if config_file is not None and config_file.exists():
+        argv += ["--config_file", str(config_file)]
     if use_cpu:
         argv.append("--cpu")
     if fp16:
@@ -183,8 +197,29 @@ def _init_model(
     try:
         sys.argv = argv
         args = unicore_options.parse_args_and_arch(parser)
+        args = save_config.read_config(args)
     finally:
         sys.argv = old_argv
+
+    # Unicore/NAG2G often assumes torch.distributed has been initialized (even for world_size=1).
+    # Since we are not calling unicore's distributed launcher here, initialize a local single-process
+    # process group when needed so that distributed_utils.get_*_rank() works.
+    if torch.distributed.is_available() and not torch.distributed.is_initialized():
+        backend = "nccl" if torch.cuda.is_available() and torch.distributed.is_nccl_available() else "gloo"
+        # Use file init method to avoid picking ports.
+        init_file = tempfile.NamedTemporaryFile(prefix="nag2g_dist_", suffix=".init", delete=False)
+        init_file.close()
+        init_method = f"file://{init_file.name}"
+        try:
+            torch.distributed.init_process_group(
+                backend=backend,
+                init_method=init_method,
+                rank=0,
+                world_size=1,
+            )
+        except Exception:
+            # If init fails, keep going; caller will see the underlying error.
+            pass
 
     use_cuda = torch.cuda.is_available() and not getattr(args, "cpu", False) and not use_cpu
     if use_cuda:
@@ -279,6 +314,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--project-dir", type=str, required=True, help="Path to NAG2G-main")
     parser.add_argument("--data-dir", type=str, required=True, help="Path to data dir containing dict.txt")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint_*.pt")
+    parser.add_argument(
+        "--config-file",
+        type=str,
+        default=None,
+        help="Optional path to NAG2G config.ini (defaults to checkpoint parent/config.ini if present).",
+    )
     parser.add_argument("--task", type=str, default="G2G_unimolv2")
     parser.add_argument("--arch", type=str, default="NAG2G_G2G")
     parser.add_argument("--loss", type=str, default="G2G")
@@ -303,6 +344,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             project_dir=Path(args.project_dir),
             data_dir=Path(args.data_dir),
             checkpoint_path=Path(args.checkpoint),
+            config_file=Path(args.config_file) if args.config_file else None,
             task_name=args.task,
             arch=args.arch,
             loss_name=args.loss,

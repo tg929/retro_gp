@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Callable, List, Optional, TYPE_CHECKING
 
 from gp_retro_repr import Program, Route, Select, ApplyTemplate, ApplyOneStepModel, Stop, RetrosynthesisStep
 from gp_retro_repr import ReactionTemplateRegistry, Inventory
@@ -12,6 +12,9 @@ try:  # optional dependency
     from gp_retro_nn import OneStepRetrosynthesisModel
 except Exception:  # pragma: no cover
     OneStepRetrosynthesisModel = None  # type: ignore
+
+if TYPE_CHECKING:  # pragma: no cover
+    from gp_retro_nn import OneStepPrediction
 
 @dataclass(frozen=True)
 class ExecutePolicy:
@@ -37,6 +40,7 @@ class FeasibleExecutor:
         inventory: Optional[Inventory] = None,
         policy: Optional[ExecutePolicy] = None,
         one_step_model: Optional["OneStepRetrosynthesisModel"] = None,
+        one_step_ranker: Optional[Callable[[str, List["OneStepPrediction"]], List["OneStepPrediction"]]] = None,
     ):
         self.reg = reg
         self.inventory = inventory
@@ -45,6 +49,7 @@ class FeasibleExecutor:
         self.mask_builder = ActionMaskBuilder(reg, inventory=inventory)
         self.engine = FeasibilityEngine(reg, inventory=inventory)
         self.one_step_model = one_step_model
+        self.one_step_ranker = one_step_ranker
 
     def execute(self, program: Program, target_smiles: str) -> Route:
         route = Route()
@@ -127,6 +132,10 @@ class FeasibleExecutor:
                 preds = self.one_step_model.predict(product, topk=int(self.policy.one_step_topk))
                 if not preds:
                     raise RuntimeError(f"One-step model produced no candidates for product={product}")
+                if self.one_step_ranker is not None:
+                    preds = list(self.one_step_ranker(product, list(preds)))
+                    if not preds:
+                        raise RuntimeError(f"One-step ranker rejected all candidates for product={product}")
 
                 # Choose requested rank; optionally repair by searching other ranks
                 rank0 = max(0, int(instr.rank))
@@ -165,19 +174,25 @@ class FeasibleExecutor:
                     )
 
                 updated = [m for i, m in enumerate(molecule_set) if i != last_selected] + list(chosen.reactants)
+                model_name = getattr(self.one_step_model, "name", "one_step")
+                original_rank = (getattr(chosen, "meta", {}) or {}).get("rank", chosen_rank)
                 step = RetrosynthesisStep(
                     molecule_set=molecule_set.copy(),
                     rational=instr.rational,
                     product=product,
-                    template_id=f"{getattr(self.one_step_model, 'name', 'one_step')}@rank={chosen_rank}",
+                    template_id=f"{model_name}@rank={original_rank}",
                     reactants=list(chosen.reactants),
                     updated_molecule_set=updated,
                     diagnostics={
                         "executor_reason": chosen_reason,
                         "one_step_score": chosen.score,
                         "one_step_meta": dict(getattr(chosen, "meta", {}) or {}),
+                        "one_step_step_score": (getattr(chosen, "meta", {}) or {}).get("step_score"),
+                        "one_step_log_score_single": (getattr(chosen, "meta", {}) or {}).get("log_score_single"),
+                        "one_step_log_p_fwd": (getattr(chosen, "meta", {}) or {}).get("step_meta", {}).get("log_p_fwd"),
                         "one_step_requested_rank": rank0,
                         "one_step_chosen_rank": chosen_rank,
+                        "one_step_original_rank": original_rank,
                         "one_step_n_candidates": len(preds),
                     },
                 )
