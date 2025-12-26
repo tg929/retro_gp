@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from gp_core.scoring import (
     GPFitnessEvaluator,
     ScoringConfig,
@@ -11,7 +16,7 @@ from gp_retro_repr import Inventory, Route, RetrosynthesisStep
 
 
 def main() -> None:
-    inv = Inventory(["O", "CCO"])  # purchasable building blocks
+    inv = Inventory(["O", "CO"])  # purchasable building blocks
 
     scorer = StepScorer(
         config=StepScoreConfig(score_type="rank", topB=2, topN=5),
@@ -24,13 +29,14 @@ def main() -> None:
     preds = [
         OneStepPrediction(reactants=["CCCC"], score=None, meta={"rank": 0}),   # not purchasable, long
         OneStepPrediction(reactants=["O"], score=None, meta={"rank": 1}),      # purchasable, short
-        OneStepPrediction(reactants=["CCO", "O"], score=None, meta={"rank": 2}),  # both purchasable
+        OneStepPrediction(reactants=["CO", "O"], score=None, meta={"rank": 2}),  # both purchasable
     ]
 
     top = scorer.rank_and_truncate(product, preds)
     assert len(top) == 2
-    # First should favor more purchasable reactants (bb_hits) and shorter SA
-    assert top[0].reactants in (["CCO", "O"], ["O"])
+    # With rank-based scoring, we still expect weak-rule signals to matter:
+    # purchasable / simpler candidates should not be ranked behind a clearly worse one.
+    assert top[0].reactants != ["CCCC"]
 
     # Build a tiny solved route
     r = Route()
@@ -67,4 +73,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
