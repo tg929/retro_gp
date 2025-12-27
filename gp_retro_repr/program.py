@@ -41,7 +41,7 @@ class Stop(Instruction):
 @dataclass
 class ExecutionConfig:
     template_registry: ReactionTemplateRegistry
-    inventory: Any  # expects .is_purchasable(smiles)
+    inventory: Any  # expects .is_purchasable(smiles), optionally .is_leaf(smiles)
 
 class Program:
     "A linear Decision Program: [Select, ApplyTemplate] repeated; Stop to finish."

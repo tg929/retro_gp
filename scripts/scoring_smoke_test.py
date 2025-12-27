@@ -12,7 +12,7 @@ from gp_core.scoring import (
     StepScorer,
 )
 from gp_retro_nn import OneStepPrediction
-from gp_retro_repr import Inventory, Route, RetrosynthesisStep
+from gp_retro_repr import Inventory, LeafCriteria, LeafCriteriaConfig, Route, RetrosynthesisStep
 
 
 def main() -> None:
@@ -67,6 +67,24 @@ def main() -> None:
     r2 = Route()
     fit2 = evaluator.evaluate(r2, program=None, invalid=False)
     assert fit2.objectives["solved"] == 0.0
+
+    # ASKCOS-style leaf criteria: allow non-buyable small molecules (e.g. 'N') to be treated as leaves
+    try:
+        import rdkit  # noqa: F401
+    except Exception:
+        return
+
+    inv2 = Inventory(["O"])
+    inv2.set_leaf_criteria(
+        LeafCriteria(
+            cfg=LeafCriteriaConfig(
+                max_natom_dict=LeafCriteriaConfig.make_max_natom_dict(logic="or", C=0, N=1, O=0, H=3),
+                min_chemical_history_dict=LeafCriteriaConfig.make_min_history_dict(logic="none"),
+            )
+        )
+    )
+    assert inv2.is_purchasable("N") is False
+    assert inv2.is_leaf("N") is True
 
     print("scoring_smoke_test: OK")
 

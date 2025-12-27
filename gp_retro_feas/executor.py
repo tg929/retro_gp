@@ -111,13 +111,14 @@ class FeasibleExecutor:
                 molecule_set = updated
                 last_selected = None
 
-                # Early stopping: if at any point all molecules are purchasable
-                # we treat the route as complete and ignore remaining instructions.
+                # Early stopping: if at any point all molecules satisfy the inventory leaf criterion
+                # (buyable-only by default; optionally ASKCOS-style leaf/stop logic),
+                # treat the route as complete and ignore remaining instructions.
                 if (
                     self.policy.stop_when_all_purchasable
                     and self.inventory is not None
                     and molecule_set
-                    and all(self.inventory.is_purchasable(m) for m in molecule_set)
+                    and all((getattr(self.inventory, "is_leaf", None) or self.inventory.is_purchasable)(m) for m in molecule_set)
                 ):
                     break
                 continue
@@ -204,7 +205,7 @@ class FeasibleExecutor:
                     self.policy.stop_when_all_purchasable
                     and self.inventory is not None
                     and molecule_set
-                    and all(self.inventory.is_purchasable(m) for m in molecule_set)
+                    and all((getattr(self.inventory, "is_leaf", None) or self.inventory.is_purchasable)(m) for m in molecule_set)
                 ):
                     break
                 continue

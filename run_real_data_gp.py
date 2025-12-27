@@ -2,7 +2,7 @@
 import argparse
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import yaml
 
@@ -30,7 +30,8 @@ def make_audit_fn(stock, target_smiles: str):
         else:
             final_set = [target_smiles]
             n_steps = 0
-        is_solved = all(stock.is_purchasable(m) for m in final_set)
+        is_leaf = getattr(stock, "is_leaf", None) or stock.is_purchasable
+        is_solved = all(is_leaf(m) for m in final_set)
         return {
             "is_solved": is_solved,
             "first_invalid_molecule_set": [] if is_solved else list(final_set),
@@ -65,14 +66,20 @@ def _load_targets_from_yaml(config_path: Path):
         raise ValueError(f"No targets with 'target_smi' found in {config_path}")
     return targets
 
-
-from typing import Optional
-
-
 def run(
     target_key: str = "all",
     template_file: Optional[str] = None,
     *,
+    # Leaf/stop criteria (ASKCOS-style)
+    leaf_chemical_property_logic: str = "none",
+    leaf_max_chemprop_c: int = 0,
+    leaf_max_chemprop_n: int = 0,
+    leaf_max_chemprop_o: int = 0,
+    leaf_max_chemprop_h: int = 0,
+    leaf_chemical_popularity_logic: str = "none",
+    leaf_min_chempop_reactants: int = 5,
+    leaf_min_chempop_products: int = 5,
+    leaf_chem_history_path: Optional[str] = None,
     nag2g_project_dir: Optional[str] = None,
     nag2g_data_dir: Optional[str] = None,
     nag2g_checkpoint_path: Optional[str] = None,
@@ -175,6 +182,53 @@ def run(
         else:
             inventory, reg = inv_reg_cache[cache_key]
 
+        # Configure ASKCOS-style leaf/stop criteria on the inventory (no building-block changes).
+        leaf_enabled = str(leaf_chemical_property_logic).lower() not in ["none", ""] or str(
+            leaf_chemical_popularity_logic
+        ).lower() not in ["none", ""]
+        if not leaf_enabled:
+            inventory.set_leaf_criteria(None)
+        else:
+            from gp_retro_repr import LeafCriteria, LeafCriteriaConfig, ChemHistorian
+
+            max_natom_dict = LeafCriteriaConfig.make_max_natom_dict(
+                logic=str(leaf_chemical_property_logic),
+                C=int(leaf_max_chemprop_c),
+                N=int(leaf_max_chemprop_n),
+                O=int(leaf_max_chemprop_o),
+                H=int(leaf_max_chemprop_h),
+            )
+            min_hist_dict = LeafCriteriaConfig.make_min_history_dict(
+                logic=str(leaf_chemical_popularity_logic),
+                as_reactant=int(leaf_min_chempop_reactants),
+                as_product=int(leaf_min_chempop_products),
+            )
+
+            chemhistorian = None
+            if str(min_hist_dict.get("logic", "none")).lower() not in ["none", ""]:
+                if not leaf_chem_history_path:
+                    raise ValueError(
+                        "leaf_chemical_popularity_logic is enabled but --leaf-chem-history-path is not provided"
+                    )
+                chemhistorian = ChemHistorian()
+                chemhistorian.load_from_file(leaf_chem_history_path)
+
+            leaf_cfg = LeafCriteriaConfig(
+                max_natom_dict=max_natom_dict,
+                min_chemical_history_dict=min_hist_dict,
+            )
+            inventory.set_leaf_criteria(LeafCriteria(cfg=leaf_cfg, chemhistorian=chemhistorian))
+            print(
+                "Leaf criteria enabled:",
+                {
+                    "chemical_property_logic": max_natom_dict.get("logic"),
+                    "max_natom": {k: int(v) for k, v in max_natom_dict.items() if k != "logic"},
+                    "chemical_popularity_logic": min_hist_dict.get("logic"),
+                    "min_history": {k: int(v) for k, v in min_hist_dict.items() if k != "logic"},
+                    "history_path": leaf_chem_history_path,
+                },
+            )
+
         print(f"\n=== Target {ti+1}/{n_targets} ({name}): {target} ===")
 
         # 针对当前目标先做一次可行动作掩码，避免全部落空
@@ -215,7 +269,7 @@ def run(
 
         evaluator = GPFitnessEvaluator(
             target_smiles=target,
-            bb_is_purchasable=inventory.is_purchasable,
+            bb_is_purchasable=inventory.is_leaf,
         )
 
         population, hist = run_gp_for_target(
@@ -272,6 +326,43 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Optional path to template file (relative to data/ or absolute). Default: data/reaction_template/hb.txt",
+    )
+    # ASKCOS-style leaf/stop criteria (no need to modify building-block files)
+    parser.add_argument(
+        "--leaf-chemical-property-logic",
+        type=str,
+        default="none",
+        choices=["none", "or", "and"],
+        help="Treat a molecule as a leaf if it is buyable OR/AND satisfies max atom-count constraints (ASKCOS style).",
+    )
+    parser.add_argument("--leaf-max-chemprop-c", type=int, default=0, help="Max C atoms for leaf property check.")
+    parser.add_argument("--leaf-max-chemprop-n", type=int, default=0, help="Max N atoms for leaf property check.")
+    parser.add_argument("--leaf-max-chemprop-o", type=int, default=0, help="Max O atoms for leaf property check.")
+    parser.add_argument("--leaf-max-chemprop-h", type=int, default=0, help="Max H atoms for leaf property check.")
+    parser.add_argument(
+        "--leaf-chemical-popularity-logic",
+        type=str,
+        default="none",
+        choices=["none", "or"],
+        help="Treat a molecule as a leaf if it is buyable OR popular enough (ASKCOS style).",
+    )
+    parser.add_argument(
+        "--leaf-min-chempop-reactants",
+        type=int,
+        default=5,
+        help="Min frequency as reactant for popularity leaf check (requires --leaf-chem-history-path).",
+    )
+    parser.add_argument(
+        "--leaf-min-chempop-products",
+        type=int,
+        default=5,
+        help="Min frequency as product for popularity leaf check (requires --leaf-chem-history-path).",
+    )
+    parser.add_argument(
+        "--leaf-chem-history-path",
+        type=str,
+        default=None,
+        help="JSON/JSON.GZ chemical history file with fields {smiles, as_reactant, as_product}.",
     )
     parser.add_argument(
         "--nag2g-project-dir",
@@ -360,6 +451,15 @@ if __name__ == "__main__":
             run(
                 target_key=args.target,
                 template_file=args.templates,
+                leaf_chemical_property_logic=args.leaf_chemical_property_logic,
+                leaf_max_chemprop_c=args.leaf_max_chemprop_c,
+                leaf_max_chemprop_n=args.leaf_max_chemprop_n,
+                leaf_max_chemprop_o=args.leaf_max_chemprop_o,
+                leaf_max_chemprop_h=args.leaf_max_chemprop_h,
+                leaf_chemical_popularity_logic=args.leaf_chemical_popularity_logic,
+                leaf_min_chempop_reactants=args.leaf_min_chempop_reactants,
+                leaf_min_chempop_products=args.leaf_min_chempop_products,
+                leaf_chem_history_path=args.leaf_chem_history_path,
                 nag2g_project_dir=args.nag2g_project_dir,
                 nag2g_data_dir=args.nag2g_data_dir,
                 nag2g_checkpoint_path=args.nag2g_checkpoint,

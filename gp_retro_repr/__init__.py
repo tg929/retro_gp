@@ -13,7 +13,7 @@ Modules:
   - registry: registries for templates and stocks
 """
 from .molecules import Molecule, canonical_smiles, molecule_from_smiles
-from .stock import Inventory
+from .stock import Inventory, LeafCriteria, LeafCriteriaConfig, ChemHistorian, ChemHistory
 from .templates import ReactionTemplate, ReactionTemplateRegistry
 from .step import RetrosynthesisStep
 from .route import Route

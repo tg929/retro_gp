@@ -38,6 +38,7 @@ class Route:
         return r
 
     def is_solved(self, inventory) -> bool:
-        "Solved if every molecule in final set is purchasable."
+        "Solved if every molecule in final set satisfies the inventory leaf criterion."
         final = self.molecule_set
-        return all(inventory.is_purchasable(m) for m in final)
+        is_leaf = getattr(inventory, "is_leaf", None) or inventory.is_purchasable
+        return all(bool(is_leaf(m)) for m in final)

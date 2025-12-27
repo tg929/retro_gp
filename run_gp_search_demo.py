@@ -70,7 +70,8 @@ def make_audit_fn(stock, target_smiles: str):
         else:
             final_set = [target_smiles]
             n_steps = 0
-        is_solved = all(stock.is_purchasable(m) for m in final_set)
+        is_leaf = getattr(stock, "is_leaf", None) or stock.is_purchasable
+        is_solved = all(is_leaf(m) for m in final_set)
         return {
             "is_solved": is_solved,
             "first_invalid_molecule_set": [] if is_solved else list(final_set),

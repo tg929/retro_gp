@@ -153,7 +153,7 @@ class RouteFitnessEvaluator:
               current_molecule_set: List[str]         # Molecules at first invalid (or final solved)
               n_steps: int                            # total steps in the route
               n_valid_steps: int                      # prefix of valid steps
-        - `is_purchasable(smiles) -> bool`
+        - `is_purchasable(smiles) -> bool` (or `is_leaf(smiles) -> bool` if you use ASKCOS-style leaf criteria)
 
     If your feasibility module uses different names, pass them explicitly via the
     constructor arguments.
