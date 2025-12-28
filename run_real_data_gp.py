@@ -290,10 +290,16 @@ def run(
         print("Top solutions:")
         for rank, ind in enumerate(population[:3], start=1):
             objs = ind["fitness"].objectives
+            steps = objs.get("steps")
+            if steps is None:
+                try:
+                    steps = len(getattr(ind["route"], "steps", []))
+                except Exception:
+                    steps = -1
             print(
                 f"  [{rank}] scalar={ind['fitness'].scalar:.3f} "
                 f"solved={bool(objs.get('solved', 0))} "
-                f"route_len={objs.get('route_len', -1)}"
+                f"steps={steps}"
             )
             print(ind["route"].to_json())
 
