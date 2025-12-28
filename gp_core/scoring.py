@@ -181,17 +181,24 @@ class RouteScoreConfig:
 
 @dataclass(frozen=True)
 class FitnessConfig:
-    invalid_scalar: float = -1e9
+    # Scalar must be comparable across states:
+    #   solved  >> unsolved >> invalid
+    # so that selection/printing is consistent and summary stats (mean) remain interpretable.
+    invalid_scalar: float = -1e6
     bloating_eta: float = 0.1
 
-    # Scalar packing coefficients for solved-route lexicographic key.
-    # Larger coef => more dominant in scalar.
-    pack_steps: float = 1e9
-    pack_cost: float = 1e6
-    pack_max_sa: float = 1e3
+    # Solved routes get a large bonus so they always outrank unsolved routes
+    # even when unsolved routes have higher shaping rewards.
+    solved_bonus: float = 1e6
+
+    # Packing coefficients for a solved-route key (smaller is better).
+    # Keep these on a moderate scale so solved scalars don't dominate stats.
+    pack_steps: float = 1e3
+    pack_cost: float = 1.0
+    pack_max_sa: float = 10.0
     pack_neg_sum_logp_single: float = 1.0
     pack_neg_sum_logp_fwd: float = 1.0
-    pack_program_len: float = 1e-3
+    pack_program_len: float = 0.1
 
 
 @dataclass(frozen=True)
@@ -672,7 +679,7 @@ class GPFitnessEvaluator:
                 + key[4] * float(self.cfg.fitness.pack_neg_sum_logp_fwd)
                 + float(program_len) * float(self.cfg.fitness.pack_program_len)
             )
-            scalar = -float(packed)  # larger is better
+            scalar = float(self.cfg.fitness.solved_bonus) - float(packed)  # larger is better
             objectives = {
                 "solved": 1.0,
                 "route_score": 0.0,

@@ -1,12 +1,22 @@
-
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Callable, List, Optional, TYPE_CHECKING
 
-from gp_retro_repr import Program, Route, Select, ApplyTemplate, ApplyOneStepModel, Stop, RetrosynthesisStep
-from gp_retro_repr import ReactionTemplateRegistry, Inventory
-from .mask import ActionMaskBuilder
+from gp_retro_repr import (
+    ApplyOneStepModel,
+    ApplyTemplate,
+    Inventory,
+    Program,
+    ReactionTemplateRegistry,
+    RetrosynthesisStep,
+    Route,
+    Select,
+    Stop,
+)
+
 from .engine import FeasibilityEngine
+from .mask import ActionMaskBuilder
 
 try:  # optional dependency
     from gp_retro_nn import OneStepRetrosynthesisModel
@@ -16,11 +26,13 @@ except Exception:  # pragma: no cover
 if TYPE_CHECKING:  # pragma: no cover
     from gp_retro_nn import OneStepPrediction
 
+
 @dataclass(frozen=True)
 class ExecutePolicy:
     """
     How to execute ApplyTemplate when multiple reactant sets exist / when a template fails.
     """
+
     require_all_purchasable: bool = False
     max_reactants: Optional[int] = None
     repair_on_failure: bool = True  # if selected template fails, try other feasible templates
@@ -28,12 +40,14 @@ class ExecutePolicy:
     one_step_topk: int = 10  # how many candidates to request from one-step model
     one_step_repair: bool = True  # if selected rank fails, try other ranks
 
+
 class FeasibleExecutor:
     """
     Execute a Program under feasibility constraints:
       - Only accept ApplyTemplate that passes applicability (and optionally inventory gating)
       - If the chosen template fails, optionally repair by choosing another feasible template
     """
+
     def __init__(
         self,
         reg: ReactionTemplateRegistry,
@@ -59,9 +73,28 @@ class FeasibleExecutor:
         for instr in program.instructions:
             if isinstance(instr, Stop):
                 break
+
             if isinstance(instr, Select):
-                last_selected = instr.index
+                # ASKCOS-style: never expand leaf molecules; Select(i) indexes non-leaf molecules.
+                if self.inventory is None:
+                    last_selected = instr.index
+                    continue
+
+                leaf_fn = getattr(self.inventory, "is_leaf", None) or self.inventory.is_purchasable
+                nonleaf_indices = [i for i, m in enumerate(molecule_set) if not leaf_fn(m)]
+                if not nonleaf_indices:
+                    # Nothing expandable remains; route is complete under the leaf criterion.
+                    last_selected = None
+                    break
+
+                idx = int(instr.index)
+                if idx < 0:
+                    idx = 0
+                if idx >= len(nonleaf_indices):
+                    idx = len(nonleaf_indices) - 1
+                last_selected = nonleaf_indices[idx]
                 continue
+
             if isinstance(instr, ApplyTemplate):
                 if last_selected is None or last_selected < 0 or last_selected >= len(molecule_set):
                     raise IndexError("Select index invalid before ApplyTemplate")
@@ -69,23 +102,27 @@ class FeasibleExecutor:
 
                 # If the intended template fails, optionally repair by picking a feasible alternative
                 res = self.engine.check_and_choose(
-                    instr.template_id, product,
+                    instr.template_id,
+                    product,
                     require_all_purchasable=self.policy.require_all_purchasable,
-                    max_reactants=self.policy.max_reactants
+                    max_reactants=self.policy.max_reactants,
                 )
                 chosen_tid = instr.template_id
                 if not res.ok and self.policy.repair_on_failure:
-                    mask = self.mask_builder.build(product,
-                                                   require_all_purchasable=self.policy.require_all_purchasable,
-                                                   max_reactants=self.policy.max_reactants)
+                    mask = self.mask_builder.build(
+                        product,
+                        require_all_purchasable=self.policy.require_all_purchasable,
+                        max_reactants=self.policy.max_reactants,
+                    )
                     # choose first feasible alternative
                     for alt_tid in mask.feasible_templates:
                         if alt_tid == instr.template_id:
                             continue
                         res_alt = self.engine.check_and_choose(
-                            alt_tid, product,
+                            alt_tid,
+                            product,
                             require_all_purchasable=self.policy.require_all_purchasable,
-                            max_reactants=self.policy.max_reactants
+                            max_reactants=self.policy.max_reactants,
                         )
                         if res_alt.ok:
                             res = res_alt
@@ -93,7 +130,9 @@ class FeasibleExecutor:
                             break
 
                 if not res.ok:
-                    raise RuntimeError(f"ApplyTemplate failed for product={product}, template={instr.template_id}, reason={res.reason}")
+                    raise RuntimeError(
+                        f"ApplyTemplate failed for product={product}, template={instr.template_id}, reason={res.reason}"
+                    )
 
                 reactants = res.chosen_reactants
                 updated = [m for i, m in enumerate(molecule_set) if i != last_selected] + reactants
@@ -105,7 +144,7 @@ class FeasibleExecutor:
                     template_id=chosen_tid,
                     reactants=reactants,
                     updated_molecule_set=updated,
-                    diagnostics={"executor_reason": res.reason}
+                    diagnostics={"executor_reason": res.reason},
                 )
                 route.append(step)
                 molecule_set = updated
@@ -118,14 +157,19 @@ class FeasibleExecutor:
                     self.policy.stop_when_all_purchasable
                     and self.inventory is not None
                     and molecule_set
-                    and all((getattr(self.inventory, "is_leaf", None) or self.inventory.is_purchasable)(m) for m in molecule_set)
+                    and all(
+                        (getattr(self.inventory, "is_leaf", None) or self.inventory.is_purchasable)(m)
+                        for m in molecule_set
+                    )
                 ):
                     break
                 continue
 
             if isinstance(instr, ApplyOneStepModel):
                 if self.one_step_model is None:
-                    raise RuntimeError("ApplyOneStepModel encountered but no one_step_model was provided to FeasibleExecutor")
+                    raise RuntimeError(
+                        "ApplyOneStepModel encountered but no one_step_model was provided to FeasibleExecutor"
+                    )
                 if last_selected is None or last_selected < 0 or last_selected >= len(molecule_set):
                     raise IndexError("Select index invalid before ApplyOneStepModel")
 
@@ -190,7 +234,9 @@ class FeasibleExecutor:
                         "one_step_meta": dict(getattr(chosen, "meta", {}) or {}),
                         "one_step_step_score": (getattr(chosen, "meta", {}) or {}).get("step_score"),
                         "one_step_log_score_single": (getattr(chosen, "meta", {}) or {}).get("log_score_single"),
-                        "one_step_log_p_fwd": (getattr(chosen, "meta", {}) or {}).get("step_meta", {}).get("log_p_fwd"),
+                        "one_step_log_p_fwd": (getattr(chosen, "meta", {}) or {}).get("step_meta", {}).get(
+                            "log_p_fwd"
+                        ),
                         "one_step_requested_rank": rank0,
                         "one_step_chosen_rank": chosen_rank,
                         "one_step_original_rank": original_rank,
@@ -205,7 +251,10 @@ class FeasibleExecutor:
                     self.policy.stop_when_all_purchasable
                     and self.inventory is not None
                     and molecule_set
-                    and all((getattr(self.inventory, "is_leaf", None) or self.inventory.is_purchasable)(m) for m in molecule_set)
+                    and all(
+                        (getattr(self.inventory, "is_leaf", None) or self.inventory.is_purchasable)(m)
+                        for m in molecule_set
+                    )
                 ):
                     break
                 continue
