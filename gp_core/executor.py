@@ -5,6 +5,8 @@ from gp_retro_feas import FeasibleExecutor, ExecutePolicy
 from gp_retro_obj import RouteFitnessEvaluator, FitnessResult
 from gp_retro_repr import Program, Stop
 
+from .budget import BudgetExceeded
+
 try:  # optional dependency
     from gp_retro_nn import OneStepRetrosynthesisModel
 except Exception:  # pragma: no cover
@@ -37,6 +39,9 @@ def evaluate_program(
     invalid = False
     try:
         route = exe.execute(prog, target_smiles=target)
+    except BudgetExceeded:
+        # Hard-stop for planner-only benchmarks using calls budget.
+        raise
     except Exception as e:
         invalid = True
         safe_prog = Program([Stop()])

@@ -7,6 +7,7 @@ from gp_retro_feas import FeasibleExecutor
 from gp_retro_obj import nsga2_survivor_selection
 
 from . import config
+from .budget import BudgetExceeded
 from .executor import evaluate_program
 from .program_ops import (
     random_program,
@@ -57,6 +58,16 @@ def run_gp_for_target(
     senses = {k: spec.direction() for k, spec in evaluator.specs.items()}
     objective_keys = list(evaluator.specs.keys())
 
+    hist = history or MetricsHistory()
+
+    def _finalize(pop: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], MetricsHistory]:
+        pop.sort(key=lambda ind: ind["fitness"].scalar, reverse=True)
+        if pop:
+            for smi, score in [(ind["route"].to_json(), ind["fitness"].scalar) for ind in pop[:3]]:
+                hist.commit(smi, score)
+        hist.proposals += 1
+        return pop, hist
+
     population: List[Dict[str, Any]] = []
     for _ in range(pop_size):
         # Use init_templates for the first random programs to boost start
@@ -69,12 +80,15 @@ def run_gp_for_target(
             model_rank_pool=model_rank_pool,
             p_model_action=p_model_action,
         )
-        ind = evaluate_program(prog, exe, evaluator, target)
+        try:
+            ind = evaluate_program(prog, exe, evaluator, target)
+        except BudgetExceeded:
+            print("[budget] one-step calls budget exceeded during GP init; stopping early.")
+            return _finalize(population)
         if nonempty_bonus and getattr(ind["route"], "steps", []):
             ind["fitness"].scalar += nonempty_bonus
         population.append(ind)
 
-    hist = history or MetricsHistory()
     for gen in range(1, generations + 1):
         scalars = [ind["fitness"].scalar for ind in population]
         solved_count = sum(1 for ind in population if ind["fitness"].objectives.get("solved", 0) > 0.5)
@@ -115,7 +129,11 @@ def run_gp_for_target(
                 new_children.append(ch)
 
             for ch in new_children:
-                ind = evaluate_program(ch, exe, evaluator, target)
+                try:
+                    ind = evaluate_program(ch, exe, evaluator, target)
+                except BudgetExceeded:
+                    print("[budget] one-step calls budget exceeded during GP evolution; stopping early.")
+                    return _finalize(population + offspring)
                 if nonempty_bonus and getattr(ind["route"], "steps", []):
                     ind["fitness"].scalar += nonempty_bonus
                 offspring.append(ind)
@@ -125,8 +143,4 @@ def run_gp_for_target(
         combined = population + offspring
         population = nsga2_survivor_selection(combined, k=pop_size, senses=senses, objective_keys=objective_keys)
 
-    population.sort(key=lambda ind: ind["fitness"].scalar, reverse=True)
-    for smi, score in [(ind["route"].to_json(), ind["fitness"].scalar) for ind in population[:3]]:
-        hist.commit(smi, score)
-    hist.proposals += 1
-    return population, hist
+    return _finalize(population)
