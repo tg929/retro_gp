@@ -13,6 +13,7 @@ from .program_ops import (
     random_program,
     crossover_one_point,
     mutate_program,
+    program_from_genes,
 )
 from .metrics import MetricsHistory
 
@@ -69,7 +70,22 @@ def run_gp_for_target(
         return pop, hist
 
     population: List[Dict[str, Any]] = []
-    for _ in range(pop_size):
+
+    # --- Inject Greedy/Baseline Seeds ---
+    if allow_model_actions and model_rank_pool and 0 in model_rank_pool:
+        # Create a program with all ranks = 0 (Greedy baseline)
+        greedy_genes = [("N", 0) for _ in range(config.max_templates_per_prog)]
+        greedy_prog = program_from_genes(greedy_genes)
+        try:
+            ind = evaluate_program(greedy_prog, exe, evaluator, target)
+            if nonempty_bonus and getattr(ind["route"], "steps", []):
+                ind["fitness"].scalar += nonempty_bonus
+            population.append(ind)
+        except BudgetExceeded:
+            print("[budget] one-step calls budget exceeded during GP init (seeding); stopping.")
+            return _finalize(population)
+
+    while len(population) < pop_size:
         # Use init_templates for the first random programs to boost start
         # But subsequent mutations will use the full template_pool
         prog = random_program(

@@ -60,9 +60,18 @@ def random_program(
         return program_from_templates(tids)
 
     genes: List[Gene] = []
+    
+    # Pre-calculate weights for geometric distribution if model actions are used
+    weights = None
+    if model_rank_pool:
+        # Weights: 1.0, 0.5, 0.25, ... favoring lower ranks
+        weights = [1.0 / (2**i) for i in range(len(model_rank_pool))]
+
     for _ in range(k):
         if random.random() < float(p_model_action):
-            genes.append(("N", int(random.choice(model_rank_pool))))
+            # Biased selection towards lower ranks
+            val = random.choices(model_rank_pool, weights=weights, k=1)[0]
+            genes.append(("N", int(val)))
         else:
             genes.append(("T", str(random.choice(template_pool))))
     return program_from_genes(genes)
@@ -95,9 +104,16 @@ def mutate_program(
     # Prefer chemistry-checked templates when provided (from feasible mask on target)
     template_insert_pool = feasible_templates or template_pool
 
+    # Pre-calculate weights for geometric distribution
+    weights = None
+    if model_rank_pool:
+        weights = [1.0 / (2**i) for i in range(len(model_rank_pool))]
+
     def _sample_gene() -> Gene:
         if allow_model_actions and model_rank_pool and random.random() < float(p_model_action):
-            return ("N", int(random.choice(model_rank_pool)))
+            # Biased selection
+            val = random.choices(model_rank_pool, weights=weights, k=1)[0]
+            return ("N", int(val))
         return ("T", str(random.choice(template_insert_pool)))
 
     op = random.random()
