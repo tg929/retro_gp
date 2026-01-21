@@ -183,27 +183,28 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     p.add_argument(
         "--targets-file",
+        "--input",
         type=str,
         default="data/target molecular/test_synthesis.csv",
         help="Targets list file; CSV uses first column as SMILES.",
     )
-    p.add_argument("--limit", type=int, default=10, help="Limit number of targets (smoke test).")
+    p.add_argument("--limit","--l", type=int, default=1000, help="Limit number of targets (smoke test).")
     p.add_argument(
-        "--out-dir",
+        "--out-dir","--output",
         type=str,
         default="logs/benchmarks",
         help="Output directory for per_target.csv and summary.csv.",
     )
     p.add_argument(
-        "--flush-every",
+        "--flush-every","--n",
         type=int,
-        default=0,
+        default=10,
         help="Write per_target.csv and summary.csv every N targets (0 disables incremental writes).",
     )
 
     # Fixed stock / leaf criteria (ASKCOS-style)
     p.add_argument(
-        "--stock-file",
+        "--stock-file","--blocks",
         type=str,
         default="data/building_block/building_blocks_dataset.txt",
         help="Stock (building blocks) file path.",
@@ -214,10 +215,10 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default="none",
         choices=["none", "or", "and"],
     )
-    p.add_argument("--leaf-max-chemprop-c", type=int, default=0)
-    p.add_argument("--leaf-max-chemprop-n", type=int, default=0)
-    p.add_argument("--leaf-max-chemprop-o", type=int, default=0)
-    p.add_argument("--leaf-max-chemprop-h", type=int, default=0)
+    p.add_argument("--leaf-max-chemprop-c", "-c", type=int, default=0)
+    p.add_argument("--leaf-max-chemprop-n", "-n", type=int, default=0)
+    p.add_argument("--leaf-max-chemprop-o", "-o", type=int, default=0)
+    p.add_argument("--leaf-max-chemprop-h", "-h", type=int, default=0)
     p.add_argument(
         "--leaf-chemical-popularity-logic",
         type=str,
@@ -229,7 +230,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--leaf-chem-history-path", type=str, default=None)
 
     # One-step (NAG2G)
-    p.add_argument("--nag2g-python", type=str, required=True, help="Python executable in the NAG2G runtime env.")
+    p.add_argument("--nag2g-python", type=str, required=True, default="/home/szdx/anaconda3/envs/nag2g/bin/python", help="Python executable in the NAG2G runtime env.")
     p.add_argument("--nag2g-project-dir", type=str, default="NAG2G-main")
     p.add_argument(
         "--nag2g-data-dir",

@@ -9,10 +9,7 @@ from typing import Any, Dict, Iterable, Iterator, Optional, Set
 
 from .molecules import canonical_smiles
 
-try:  # optional dependency
-    from rdkit import Chem
-except Exception:  # pragma: no cover
-    Chem = None  # type: ignore
+from rdkit import Chem
 
 
 @dataclass(frozen=True)
@@ -124,8 +121,6 @@ class LeafCriteria:
         self._leaf_fn = self._build_leaf_fn()
 
     def _is_small_enough(self, smiles: str) -> bool:
-        if Chem is None:
-            return False
         natom_dict = defaultdict(lambda: 0)
         mol = Chem.MolFromSmiles(smiles)
         if not mol:

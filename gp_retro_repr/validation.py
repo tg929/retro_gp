@@ -3,19 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any
 
-try:
-    from rdkit import Chem
-except Exception:
-    Chem = None  # type: ignore
+from rdkit import Chem
 
 @dataclass
 class MoleculeChecks:
     "Molecule-level checks (validity + availability)."
     @staticmethod
     def is_valid(smiles: str) -> bool:
-        if Chem is None:
-            # cannot parse; assume well-formed if not empty
-            return bool(smiles)
         return Chem.MolFromSmiles(smiles) is not None
 
     @staticmethod

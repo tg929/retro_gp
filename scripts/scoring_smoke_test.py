@@ -74,22 +74,19 @@ def main() -> None:
     assert fit3.scalar < fit2.scalar
 
     # ASKCOS-style leaf criteria: allow non-buyable small molecules (e.g. 'N') to be treated as leaves
-    try:
-        import rdkit  # noqa: F401
-    except Exception:
-        rdkit = None
-    if rdkit is not None:
-        inv2 = Inventory(["O"])
-        inv2.set_leaf_criteria(
-            LeafCriteria(
-                cfg=LeafCriteriaConfig(
-                    max_natom_dict=LeafCriteriaConfig.make_max_natom_dict(logic="or", C=0, N=1, O=0, H=3),
-                    min_chemical_history_dict=LeafCriteriaConfig.make_min_history_dict(logic="none"),
-                )
+    import rdkit  # noqa: F401
+
+    inv2 = Inventory(["O"])
+    inv2.set_leaf_criteria(
+        LeafCriteria(
+            cfg=LeafCriteriaConfig(
+                max_natom_dict=LeafCriteriaConfig.make_max_natom_dict(logic="or", C=0, N=1, O=0, H=3),
+                min_chemical_history_dict=LeafCriteriaConfig.make_min_history_dict(logic="none"),
             )
         )
-        assert inv2.is_purchasable("N") is False
-        assert inv2.is_leaf("N") is True
+    )
+    assert inv2.is_purchasable("N") is False
+    assert inv2.is_leaf("N") is True
 
     # FeasibleExecutor: Select(i) must never expand leaf molecules (ASKCOS-style stop criterion).
     from gp_retro_feas import FeasibleExecutor, ExecutePolicy

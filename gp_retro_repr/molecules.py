@@ -2,23 +2,17 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
-try:
-    from rdkit import Chem
-except Exception:  # pragma: no cover
-    Chem = None  # type: ignore
+
+from rdkit import Chem
 
 def canonical_smiles(smiles: str) -> str:
-    "Return RDKit-canonical SMILES if RDKit is available; otherwise trimmed input."
-    if Chem is None:
-        return smiles.strip()
+    "Return RDKit-canonical SMILES."
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         raise ValueError(f"Invalid SMILES: {smiles}")
     return Chem.MolToSmiles(mol)
 
 def molecule_from_smiles(smiles: str):
-    if Chem is None:
-        raise RuntimeError("RDKit not available. Please install RDKit to use molecule features.")
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         raise ValueError(f"Invalid SMILES: {smiles}")
@@ -32,8 +26,6 @@ class Molecule:
 
     @property
     def rdkit(self):
-        if Chem is None:
-            raise RuntimeError("RDKit not available.")
         return Chem.MolFromSmiles(self.smiles)
 
     def __str__(self):

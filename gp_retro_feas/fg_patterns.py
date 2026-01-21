@@ -1,10 +1,8 @@
 
 from __future__ import annotations
 from typing import Dict, List, Set
-try:
-    from rdkit import Chem
-except Exception:
-    Chem = None  # type: ignore
+
+from rdkit import Chem
 
 # Minimal functional-group SMARTS (extend as needed)
 FG_LIBRARY: Dict[str, str] = {
@@ -30,9 +28,6 @@ FG_LIBRARY: Dict[str, str] = {
 
 def find_functional_groups(smiles: str) -> Set[str]:
     "Return set of FG labels detected in the molecule."
-    if Chem is None:
-        # Fallback: cannot parse; return empty set
-        return set()
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return set()

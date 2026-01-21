@@ -3,13 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Iterable, Tuple
 
-# Optional dependencies
-try:
-    from rdkit import Chem
-    from rdkit.Chem import rdChemReactions
-except Exception:  # pragma: no cover
-    Chem = None  # type: ignore
-    rdChemReactions = None  # type: ignore
+from rdkit import Chem
+from rdkit.Chem import rdChemReactions
 
 try:
     # rdchiral is the typical tool to apply retro-templates on products
@@ -69,39 +64,31 @@ class ReactionTemplate:
             return out_sets
 
         # --- 兜底：使用 RDKit 反应引擎（尽量不影响原有行为，只在 rdchiral 缺失时启用） ---
-        if rdChemReactions is not None and Chem is not None:
-            try:
-                rxn = rdChemReactions.ReactionFromSmarts(self.smirks, useSmarts=True)
-                if rxn is None:
-                    raise RuntimeError(f"RDKit failed to parse SMIRKS: {self.smirks}")
-                mol = Chem.MolFromSmiles(product_smiles)
-                if mol is None:
-                    raise RuntimeError(f"Invalid product SMILES for template {self.template_id}: {product_smiles}")
-                outputs = rxn.RunReactants((mol,))
-                out_sets: List[List[str]] = []
-                for prods in outputs:
-                    parts: List[str] = []
-                    for m in prods:
-                        if m is None:
-                            continue
-                        smi = Chem.MolToSmiles(m, isomericSmiles=True)
-                        if smi:
-                            parts.append(smi)
-                    if parts:
-                        out_sets.append(parts)
-                return out_sets
-            except Exception as e:
-                # 统一走到下面的 RuntimeError
-                raise RuntimeError(
-                    f"Neither rdchiral nor RDKit could apply template {self.template_id} "
-                    f"on product {product_smiles}: {e}"
-                )
-
-        # 如果既没有 rdchiral 也没有 RDKit，则保持之前的行为：立即报错
-        raise RuntimeError(
-            "rdchiral not available and RDKit reaction engine unavailable. "
-            "Install `rdchiral` (recommended) 或者 RDKit 以应用逆合成模板。"
-        )
+        try:
+            rxn = rdChemReactions.ReactionFromSmarts(self.smirks, useSmarts=True)
+            if rxn is None:
+                raise RuntimeError(f"RDKit failed to parse SMIRKS: {self.smirks}")
+            mol = Chem.MolFromSmiles(product_smiles)
+            if mol is None:
+                raise RuntimeError(f"Invalid product SMILES for template {self.template_id}: {product_smiles}")
+            outputs = rxn.RunReactants((mol,))
+            out_sets: List[List[str]] = []
+            for prods in outputs:
+                parts: List[str] = []
+                for m in prods:
+                    if m is None:
+                        continue
+                    smi = Chem.MolToSmiles(m, isomericSmiles=True)
+                    if smi:
+                        parts.append(smi)
+                if parts:
+                    out_sets.append(parts)
+            return out_sets
+        except Exception as e:
+            raise RuntimeError(
+                f"Neither rdchiral nor RDKit could apply template {self.template_id} "
+                f"on product {product_smiles}: {e}"
+            )
 
 
 class ReactionTemplateRegistry:

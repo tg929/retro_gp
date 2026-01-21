@@ -11,10 +11,7 @@ from gp_retro_obj import FitnessResult, ObjectiveSpec
 from gp_retro_repr import Route, Program, ApplyTemplate, ApplyOneStepModel
 from gp_retro_repr.molecules import canonical_smiles
 
-try:  # optional dependency
-    from rdkit import Chem
-except Exception:  # pragma: no cover
-    Chem = None  # type: ignore
+from rdkit import Chem
 
 
 SaFn = Callable[[str], float]
@@ -52,8 +49,6 @@ def _canonicalize_smiles_cached(smiles: str, strip_atom_maps: bool) -> str:
     - NAG2G candidates can contain salts/charged fragments; we keep them.
     - Atom-mapping numbers are not useful for inventory matching / GP equality tests.
     """
-    if Chem is None:
-        return (smiles or "").strip()
     smi = (smiles or "").strip()
     if not smi:
         raise ValueError("empty smiles")
@@ -94,10 +89,6 @@ def _is_salt_like_ion(smiles: str) -> bool:
     smi = (smiles or "").strip()
     if not smi:
         return False
-
-    # If RDKit isn't available, fall back to "single bracket ion" only.
-    if Chem is None:
-        return bool(_ION_BRACKET_ONLY_RE.match(smi))
 
     mol = Chem.MolFromSmiles(smi)
     if mol is None:

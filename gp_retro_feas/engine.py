@@ -6,11 +6,8 @@ from functools import lru_cache
 
 from gp_retro_repr import ReactionTemplateRegistry, Inventory
 
-# Optional RDKit for cleaning template outputs
-try:  # pragma: no cover
-    from rdkit import Chem
-except Exception:  # pragma: no cover
-    Chem = None  # type: ignore
+# RDKit for cleaning template outputs
+from rdkit import Chem
 
 @dataclass
 class FeasibilityResult:
@@ -41,10 +38,8 @@ class FeasibilityEngine:
     def _clean_smiles(smiles: str) -> str:
         """
         Remove atom-mapping/dummy atoms '*' so inventory lookup has a chance to match.
-        If RDKit is unavailable or parsing fails, return input unchanged.
+        If parsing fails, return input unchanged.
         """
-        if Chem is None:
-            return smiles
         try:
             mol = Chem.MolFromSmiles(smiles, sanitize=False)
             if mol is None:
