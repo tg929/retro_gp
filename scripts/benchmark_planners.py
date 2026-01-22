@@ -218,7 +218,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--leaf-max-chemprop-c", "-c", type=int, default=0)
     p.add_argument("--leaf-max-chemprop-n", "-n", type=int, default=0)
     p.add_argument("--leaf-max-chemprop-o", "-o", type=int, default=0)
-    p.add_argument("--leaf-max-chemprop-h", "-h", type=int, default=0)
+    p.add_argument("--leaf-max-chemprop-h", "-H", type=int, default=0)
     p.add_argument(
         "--leaf-chemical-popularity-logic",
         type=str,
@@ -230,7 +230,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--leaf-chem-history-path", type=str, default=None)
 
     # One-step (NAG2G)
-    p.add_argument("--nag2g-python", type=str, required=True, default="/home/szdx/anaconda3/envs/nag2g/bin/python", help="Python executable in the NAG2G runtime env.")
+    p.add_argument("--nag2g-python", type=str, default="/home/szdx/anaconda3/envs/nag2g/bin/python", help="Python executable in the NAG2G runtime env.")
     p.add_argument("--nag2g-project-dir", type=str, default="NAG2G-main")
     p.add_argument(
         "--nag2g-data-dir",
