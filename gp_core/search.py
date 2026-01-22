@@ -1,7 +1,7 @@
 """GP search loop with metrics and rank-based selection."""
 import copy
 import random
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from gp_retro_feas import FeasibleExecutor
 from gp_retro_obj import nsga2_survivor_selection
@@ -50,6 +50,7 @@ def run_gp_for_target(
     allow_model_actions: bool = False,
     model_rank_pool: Optional[List[int]] = None,
     p_model_action: float = 0.0,
+    per_gen_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ):
     random.seed(seed)
     template_pool = template_pool or list(reg.templates.keys())
@@ -114,6 +115,18 @@ def run_gp_for_target(
             f"Gen {gen:02d} solved: {solved_count}/{len(population)} "
             f"best: {best['fitness'].scalar:.3f} mean: {sum(scalars)/len(scalars):.3f}"
         )
+
+        if per_gen_callback:
+            per_gen_callback(
+                {
+                    "gen": gen,
+                    "solved": solved_count,
+                    "population": len(population),
+                    "best": float(best["fitness"].scalar),
+                    "mean": float(sum(scalars) / len(scalars)),
+                    "seed": seed,
+                }
+            )
 
         parents = rank_parents(population, method="invrank")
 

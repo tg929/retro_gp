@@ -176,55 +176,21 @@ def summarize(rows: Sequence[Dict[str, Any]], *, planners: Sequence[str], n_targ
 
 
 def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Benchmark planner-only variants under a unified one-step calls budget.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
+    p = argparse.ArgumentParser(description="Benchmark planner-only variants under a unified one-step calls budget.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    p.add_argument(
-        "--targets-file",
-        "--input",
-        type=str,
-        default="data/target molecular/test_synthesis.csv",
-        help="Targets list file; CSV uses first column as SMILES.",
-    )
-    p.add_argument("--limit","--l", type=int, default=1000, help="Limit number of targets (smoke test).")
-    p.add_argument(
-        "--out-dir","--output",
-        type=str,
-        default="logs/benchmarks",
-        help="Output directory for per_target.csv and summary.csv.",
-    )
-    p.add_argument(
-        "--flush-every","--n",
-        type=int,
-        default=10,
-        help="Write per_target.csv and summary.csv every N targets (0 disables incremental writes).",
-    )
+    p.add_argument("--targets-file", "--input", type=str, default="data/target molecular/test_synthesis.csv", help="Targets list file; CSV uses first column as SMILES.")
+    p.add_argument("--limit", "--l", type=int, default=1000, help="Limit number of targets (smoke test).")
+    p.add_argument("--out-dir", "--output", type=str, default="logs/benchmarks", help="Output directory for per_target.csv and summary.csv.")
+    p.add_argument("--flush-every", "--n", type=int, default=10, help="Write per_target.csv and summary.csv every N targets (0 disables incremental writes).")
 
     # Fixed stock / leaf criteria (ASKCOS-style)
-    p.add_argument(
-        "--stock-file","--blocks",
-        type=str,
-        default="data/building_block/building_blocks_dataset.txt",
-        help="Stock (building blocks) file path.",
-    )
-    p.add_argument(
-        "--leaf-chemical-property-logic",
-        type=str,
-        default="none",
-        choices=["none", "or", "and"],
-    )
+    p.add_argument("--stock-file", "--blocks", type=str, default="data/building_block/building_blocks_dataset.txt", help="Stock (building blocks) file path.")
+    p.add_argument("--leaf-chemical-property-logic", type=str, default="none", choices=["none", "or", "and"])
     p.add_argument("--leaf-max-chemprop-c", "-c", type=int, default=0)
     p.add_argument("--leaf-max-chemprop-n", "-n", type=int, default=0)
     p.add_argument("--leaf-max-chemprop-o", "-o", type=int, default=0)
     p.add_argument("--leaf-max-chemprop-h", "-H", type=int, default=0)
-    p.add_argument(
-        "--leaf-chemical-popularity-logic",
-        type=str,
-        default="none",
-        choices=["none", "or"],
-    )
+    p.add_argument("--leaf-chemical-popularity-logic", type=str, default="none", choices=["none", "or"])
     p.add_argument("--leaf-min-chempop-reactants", type=int, default=5)
     p.add_argument("--leaf-min-chempop-products", type=int, default=5)
     p.add_argument("--leaf-chem-history-path", type=str, default=None)
@@ -232,24 +198,11 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     # One-step (NAG2G)
     p.add_argument("--nag2g-python", type=str, default="/home/szdx/anaconda3/envs/nag2g/bin/python", help="Python executable in the NAG2G runtime env.")
     p.add_argument("--nag2g-project-dir", type=str, default="NAG2G-main")
-    p.add_argument(
-        "--nag2g-data-dir",
-        type=str,
-        default="NAG2G-main/USPTO50K_brief_20230227/USPTO50K_brief_20230227",
-    )
-    p.add_argument(
-        "--nag2g-checkpoint",
-        type=str,
-        default="NAG2G-main/NAG2G_unimolplus_uspto_50k_20230513-222355/checkpoint_last.pt",
-    )
+    p.add_argument("--nag2g-data-dir", type=str, default="NAG2G-main/USPTO50K_brief_20230227/USPTO50K_brief_20230227")
+    p.add_argument("--nag2g-checkpoint", type=str, default="NAG2G-main/NAG2G_unimolplus_uspto_50k_20230513-222355/checkpoint_last.pt")
     p.add_argument("--nag2g-dict-name", type=str, default="dict_20230310.txt")
     p.add_argument("--nag2g-bpe-tokenizer-path", type=str, default="none")
-    p.add_argument(
-        "--nag2g-search-strategies",
-        type=str,
-        default="SimpleGenerator",
-        choices=["SimpleGenerator", "SequenceGeneratorBeamSearch"],
-    )
+    p.add_argument("--nag2g-search-strategies", type=str, default="SimpleGenerator", choices=["SimpleGenerator", "SequenceGeneratorBeamSearch"])
     p.add_argument("--nag2g-len-penalty", type=float, default=0.0)
     p.add_argument("--nag2g-temperature", type=float, default=1.0)
     p.add_argument("--nag2g-cpu", action="store_true")
@@ -258,13 +211,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     # Shared expansion knobs
     p.add_argument("--one-step-topk", type=int, default=10, help="Candidates requested from NAG2G per expansion.")
     p.add_argument("--one-step-topb", type=int, default=10, help="Candidates kept after StepScorer re-ranking.")
-    p.add_argument(
-        "--step-score-type",
-        type=str,
-        default="rank",
-        choices=["rank", "raw", "logprob", "prob"],
-        help="How StepScorer interprets OneStepPrediction.score.",
-    )
+    p.add_argument("--step-score-type", type=str, default="rank", choices=["rank", "raw", "logprob", "prob"], help="How StepScorer interprets OneStepPrediction.score.")
     p.add_argument("--rank-temperature", type=float, default=2.0, help="Only used when step-score-type=rank.")
 
     p.add_argument("--calls-budget", type=int, default=50, help="Max one-step inference calls per planner run.")
@@ -279,12 +226,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--gp-generations", type=int, default=10)
     p.add_argument("--gp-seeds", type=str, default="123", help="Comma-separated seeds (multi-restart within budget).")
 
-    p.add_argument(
-        "--planners",
-        type=str,
-        default="gp,greedy,beam,best_first",
-        help="Comma-separated planners: gp,greedy,beam,best_first",
-    )
+    p.add_argument("--planners", type=str, default="gp,greedy,beam,best_first", help="Comma-separated planners: gp,greedy,beam,best_first")
     return p.parse_args(argv)
 
 
@@ -394,6 +336,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     budgeted = BudgetedOneStepModel(nag2g, counter=counter, max_calls=int(args.calls_budget))
                     exe = FeasibleExecutor(reg, inventory=stock, policy=policy, one_step_model=budgeted, one_step_ranker=one_step_ranker)
 
+                    gen_rows: List[Dict[str, Any]] = []
+
+                    def _log_gen(info: Dict[str, Any]) -> None:
+                        gen_rows.append(
+                            {
+                                "target_index": ti,
+                                "target": target,
+                                "planner": "gp",
+                                "seed": info.get("seed"),
+                                "gen": info.get("gen"),
+                                "solved": info.get("solved"),
+                                "population": info.get("population"),
+                                "best": info.get("best"),
+                                "mean": info.get("mean"),
+                                "calls_used": counter.one_step_calls,
+                            }
+                        )
+
                     # Align GP program length with max_depth
                     import gp_core.config as gp_cfg
 
@@ -418,6 +378,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             allow_model_actions=True,
                             model_rank_pool=list(range(max(1, int(args.one_step_topb)))),
                             p_model_action=1.0,
+                            per_gen_callback=_log_gen,
                         )
                         if pop:
                             cand = pop[0]
@@ -456,6 +417,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             "error": error,
                         }
                     )
+
+                    if gen_rows:
+                        gen_dir = out_dir / "gp_gen"
+                        gen_dir.mkdir(parents=True, exist_ok=True)
+                        gen_path = gen_dir / f"{ti:04d}.csv"
+                        _write_csv(
+                            gen_path,
+                            gen_rows,
+                            fieldnames=[
+                                "target_index",
+                                "target",
+                                "planner",
+                                "seed",
+                                "gen",
+                                "solved",
+                                "population",
+                                "best",
+                                "mean",
+                                "calls_used",
+                            ],
+                        )
                     continue
 
                 # Baselines use the same executor wiring (same model + ranker + policy),
