@@ -65,12 +65,17 @@ class ReactionTemplate:
 
         # --- 兜底：使用 RDKit 反应引擎（尽量不影响原有行为，只在 rdchiral 缺失时启用） ---
         try:
-            rxn = rdChemReactions.ReactionFromSmarts(self.smirks, useSmarts=True)
+            # Use ReactionFromSmarts without useSmarts=True if fails, or try both
+            # First try as SMARTS
+            rxn = rdChemReactions.ReactionFromSmarts(self.smirks)
             if rxn is None:
-                raise RuntimeError(f"RDKit failed to parse SMIRKS: {self.smirks}")
+               # RDKit sometimes is picky, but usually ReactionFromSmarts is robust for standard SMIRKS
+               raise RuntimeError(f"RDKit failed to parse SMIRKS: {self.smirks}")
+            
             mol = Chem.MolFromSmiles(product_smiles)
             if mol is None:
                 raise RuntimeError(f"Invalid product SMILES for template {self.template_id}: {product_smiles}")
+            
             outputs = rxn.RunReactants((mol,))
             out_sets: List[List[str]] = []
             for prods in outputs:
@@ -78,6 +83,11 @@ class ReactionTemplate:
                 for m in prods:
                     if m is None:
                         continue
+                    # Clean up: RDKit reactions can leave unmapped atoms or mess up sanitization
+                    try:
+                        Chem.SanitizeMol(m)
+                    except:
+                        pass
                     smi = Chem.MolToSmiles(m, isomericSmiles=True)
                     if smi:
                         parts.append(smi)

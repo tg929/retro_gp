@@ -77,22 +77,46 @@ class FeasibleExecutor:
             if isinstance(instr, Select):
                 # ASKCOS-style: never expand leaf molecules; Select(i) indexes non-leaf molecules.
                 if self.inventory is None:
+                    # Fallback if no inventory: select blindly by index
                     last_selected = instr.index
                     continue
 
                 leaf_fn = getattr(self.inventory, "is_leaf", None) or self.inventory.is_purchasable
                 nonleaf_indices = [i for i, m in enumerate(molecule_set) if not leaf_fn(m)]
+                
                 if not nonleaf_indices:
                     # Nothing expandable remains; route is complete under the leaf criterion.
                     last_selected = None
                     break
 
+                # --- Content-Based Addressing Logic ---
+                candidates = nonleaf_indices
+                
+                # Apply sorting based on criteria
+                if instr.criteria == "heaviest":
+                    # Sort by length of SMILES string as a rough proxy for MW/complexity
+                    # (To be precise, one could use RDKit MolWt, but len(smi) is fast and usually correlated)
+                    candidates.sort(key=lambda idx: len(molecule_set[idx]), reverse=True)
+                elif instr.criteria == "lightest":
+                    candidates.sort(key=lambda idx: len(molecule_set[idx]), reverse=False)
+                elif instr.criteria == "random":
+                    # For stability within one execution, we use a deterministic hash or just keep order?
+                    # "Random" usually implies "pick a random one at runtime", but to be reproducible 
+                    # it's better to rely on the 'index' to pick from the shuffled list, or just use index.
+                    # Here we simply don't sort, so it relies on the list order (which is history-dependent).
+                    pass
+                else: 
+                    # "index" or unknown: keep original order
+                    pass
+                
+                # Select using the index into the (potentially sorted) candidates list
                 idx = int(instr.index)
                 if idx < 0:
                     idx = 0
-                if idx >= len(nonleaf_indices):
-                    idx = len(nonleaf_indices) - 1
-                last_selected = nonleaf_indices[idx]
+                if idx >= len(candidates):
+                    idx = len(candidates) - 1
+                
+                last_selected = candidates[idx]
                 continue
 
             if isinstance(instr, ApplyTemplate):

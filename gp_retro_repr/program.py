@@ -14,8 +14,9 @@ class Instruction:
 
 @dataclass(frozen=True)
 class Select(Instruction):
-    "Select a product index from the current molecule set."
-    index: int
+    "Select a product index from the current molecule set, possibly using criteria."
+    index: int = 0
+    criteria: str = "index"  # "index", "heaviest", "lightest", "random"
 
 @dataclass(frozen=True)
 class ApplyTemplate(Instruction):

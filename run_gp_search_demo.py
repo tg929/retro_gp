@@ -110,7 +110,12 @@ def templates_of_program(prog: Program) -> List[str]:
 def program_from_templates(template_ids):
     steps = []
     for tid in template_ids:
-        steps.append(Select(0))                     # 每一步都先 Select
+        # Use random criteria for diversity: 
+        # - "heaviest" targets large fragments
+        # - "lightest" targets small fragments
+        # - "index" maintains historical context or default behavior
+        crit = random.choice(["index", "heaviest", "lightest", "index"]) 
+        steps.append(Select(0, criteria=crit))                     
         steps.append(ApplyTemplate(tid, rational="gp"))
     steps.append(Stop())
     return Program(steps)
@@ -362,8 +367,8 @@ def run_gp_search(
 
 def main():
     run_gp_search(
-        pop_size=20,
-        generations=15,
+        pop_size=50,       # Increased from 20 for better diversity
+        generations=20,    # Increased from 15 for longer evolution
         p_crossover=0.7,
         p_mutation=0.4,
         seed=123,
