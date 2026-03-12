@@ -91,11 +91,38 @@ def load_inventory_and_templates(
     if not inv_files:
         raise FileNotFoundError(f"No inventory files found in {bb_root}")
 
-    templates_path = Path(templates_path) if templates_path else (root / "reaction_template" / "hb.txt")
-    if not templates_path.is_absolute():
-        templates_path = root / templates_path
-    if not templates_path.exists():
-        raise FileNotFoundError(f"Template file not found: {templates_path}")
+    def _resolve_templates_path(p: Optional[Union[str, Path]]) -> Path:
+        """
+        Resolve templates path with a forgiving search order.
+
+        Accepted forms:
+          - absolute path
+          - relative to CWD (e.g. data/reaction_template/hb.txt when running from repo root)
+          - relative to repo root (config.root)
+          - relative to data root (config.data_root) (legacy behavior)
+        """
+
+        if not p:
+            return root / "reaction_template" / "hb.txt"
+
+        raw = Path(p)
+        if raw.is_absolute():
+            return raw
+
+        candidates = [
+            raw,  # relative to CWD
+            config.root / raw,  # relative to repo root
+            root / raw,  # relative to data/ (legacy)
+        ]
+        for c in candidates:
+            if c.exists():
+                return c
+
+        # Preserve the previous error shape but include what we tried.
+        tried = ", ".join(str(c) for c in candidates)
+        raise FileNotFoundError(f"Template file not found. Tried: {tried}")
+
+    templates_path = _resolve_templates_path(templates_path)
 
     inventory = load_inventory_from_files(inv_files)
     reg = load_retro_templates(

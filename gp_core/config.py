@@ -6,7 +6,7 @@ data_root = root / "data"
 scscore_dir = root / "scscore" / "models" / "full_reaxys_model_1024bool"
 
 # GP defaults
-pop_size = 10
+pop_size = 50
 generations = 20
 pcross = 0.7
 pmut = 0.4
