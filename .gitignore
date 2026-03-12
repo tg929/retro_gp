@@ -1,4 +1,7 @@
 *.md
+!AGENTS.md
+!memory-bank/
+!memory-bank/*.md
 *.pyc
 scscore-master/*
 scscore/*
