@@ -25,6 +25,8 @@
   `gp_retro_nn/`
 - 实验批跑、汇总、画图：
   `scripts/`
+- encoder/decoder 预训练部件与未来对齐模块：
+  `model/`
 
 ## Validation Ladder
 
@@ -41,6 +43,8 @@
 - 改 NAG2G 适配：
   先跑 `python scripts/inspect_nag2g_one_step.py ...`
   再跑单目标 `run_real_data_gp.py`
+- 学习或检查 `model/`：
+  优先做静态导入、tokenizer 行为检查、数据字段拆分检查，不要一开始就写训练脚本。
 
 ## Benchmark Invariants
 

@@ -14,6 +14,7 @@
 - `scripts/benchmark_planners.py` 是当前最成熟的实验框架。
   它把 GP 和多个 baseline planner 放在同一个 calls budget 下比较，输出 `per_target.csv` 和 `summary.csv`。
 - `gp_retro_nn/` 提供 NAG2G 的持久子进程接入，让主环境和 one-step 推理环境解耦。
+- `model/` 是新加入的实验目录，里面有一个 BERT 风格 encoder 和一个 GPT 风格 decoder，目标是后续通过对齐模块把它们接成单步逆合成生成模型。
 
 ## 关键设计约束
 
@@ -27,6 +28,7 @@
 - 已有模块化源码、demo、benchmark、实验说明和多份历史分析文档。
 - 没有统一的顶层 README；上下文分散在 `README_experiments.md`、各模块 README 和若干阶段性笔记中。
 - 仓库内包含多个内嵌第三方项目：`ASKCOS/`、`ChemProjector-main/`、`NAG2G-main/`、`scscore/`。
+- `model/data/*.csv` 是反应数据集，当前格式是空格切分后的 `reactants>reagents>production` 字段，不是原始未分词 SMILES。
 
 ## 修改优先级
 

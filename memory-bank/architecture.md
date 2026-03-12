@@ -19,6 +19,7 @@
 - `environment.yml`: 主仓库 `retrogp` 环境配置。
 - `nag2g.yml`: NAG2G 推理环境配置。
 - `demo_utils.py`: demo 用的世界构造函数、数据加载小工具、默认 objective 构造。
+- `model/`: 新加入的 encoder-decoder 实验目录，计划用于做单步逆合成条件生成。
 - `run_repr_demo.py`: 表示层最小 demo，展示 `Program -> Route`。
 - `run_feas_demo.py`: 可行性层 demo，展示 FG 预筛、动作掩码和可行执行。
 - `run_obj_demo.py`: 多目标层 demo，展示 `RouteFitnessEvaluator`、lexicase、NSGA-II。
@@ -52,6 +53,29 @@
 - `data/target molecular/enamine_smiles_1k.csv`: 一组 Enamine SMILES 数据。
 - `data/target molecular/test_chembl.csv`: benchmark 或测试用 ChEMBL 目标集。
 - `data/target molecular/test_synthesis.csv`: planner-only benchmark 默认目标文件。
+
+## Experimental Encoder-Decoder
+
+### `model/`
+
+- `model/data/`: 新实验目录的数据集。
+- `model/data/train.csv`: 训练集，列为 `class` 和空格切分后的 `reactants>reagents>production`。
+- `model/data/eval.csv`: 验证集。
+- `model/data/test.csv`: 测试集。
+- `model/encoder/`: BERT 风格 encoder 目录。
+- `model/encoder/local_bert.py`: 自定义双向 Transformer encoder，含 embedding、bidirectional self-attention、pooler、MLM head。
+- `model/encoder/encoders.py`: encoder 包装层，负责按 spec 构建本地 BERT 或 HuggingFace encoder。
+- `model/encoder/MolEncoder-SMILES-Drug-1.2B/`: encoder 权重、配置和词表目录。
+- `model/encoder/MolEncoder-SMILES-Drug-1.2B/encoder.yaml`: encoder 结构配置，目前是 `24 x 32 x 2048`。
+- `model/encoder/MolEncoder-SMILES-Drug-1.2B/checkpoint.pt`: encoder 预训练权重。
+- `model/encoder/MolEncoder-SMILES-Drug-1.2B/vocab.txt`: encoder 词表。
+- `model/decoder/`: GPT 风格 decoder 目录。
+- `model/decoder/model.py`: 自回归 GPT 模型，使用 causal attention 和 RoPE，当前没有 cross-attention。
+- `model/decoder/tokenizer.py`: decoder 专用 SMILES tokenizer，明确重写了 regex 分词逻辑。
+- `model/decoder/loadmodel_example.py`: decoder 加载与生成示例。
+- `model/decoder/vocabs/vocab.txt`: decoder 词表。
+- `model/decoder/weights/SMILES-650M-3B-Epoch1.pt`: decoder 权重。
+- 当前已确认 `model/decoder/model.py` 导入时依赖 `utils.train_utils`，该模块目前不在本仓库中；这是项目内缺失依赖，不是第三方包缺失。
 
 ## Core Search Layer
 

@@ -14,7 +14,7 @@
 
 ## Repo Boundaries
 
-- 核心可维护代码在 `gp_core/`、`gp_retro_repr/`、`gp_retro_feas/`、`gp_retro_obj/`、`gp_retro_nn/`、`scripts/`、`setting/`、`data/`、`run_*.py`、`demo_utils.py`。
+- 核心可维护代码在 `gp_core/`、`gp_retro_repr/`、`gp_retro_feas/`、`gp_retro_obj/`、`gp_retro_nn/`、`model/`、`scripts/`、`setting/`、`data/`、`run_*.py`、`demo_utils.py`。
 - 主要运行入口是 `run_real_data_gp.py` 和 `scripts/benchmark_planners.py`。
 - `ASKCOS/`、`ChemProjector-main/`、`NAG2G-main/`、`scscore/` 是内嵌第三方项目。默认不要直接改这些目录，除非用户明确要求，或者任务本身就是在这些子项目里开发。
 - `logs/`、`__pycache__/`、benchmark 产物、时间戳输出文件都视为运行时产物，默认不编辑。
@@ -26,6 +26,7 @@
 - 多目标、适应度、选择器：先看 `gp_retro_obj/`，再看 `gp_core/fitness.py` 和 `gp_core/scoring.py` 的调用关系。
 - GP 搜索、planner-only 公平对比、calls budget：先看 `gp_core/` 和 `scripts/benchmark_planners.py`。
 - NAG2G one-step 接入：先看 `gp_retro_nn/`、`run_real_data_gp.py`、`scripts/inspect_nag2g_one_step.py`。
+- 新上传的 encoder/decoder 与后续单步模型对齐模块：先看 `model/encoder/`、`model/decoder/`、`model/data/`。
 - 数据、模板、目标配置：先看 `data/` 和 `gp_core/data_loading.py`。
 
 ## Working Rules
