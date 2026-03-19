@@ -11,6 +11,12 @@
 - 新识别并记录了 `model/` 目录：其中包含一个 BERT 风格 encoder、一个 GPT 风格 decoder，以及配套反应数据集。
 - 确认 `retrogp` 环境里已经有 `torch`、`transformers`、`tokenizers`、`PyYAML`，并把缺失的直接依赖同步回 `environment.yml`。
 - 把 `environment.yml` 从旧的 UTF-16LE 文本转成了 UTF-8，后续可以正常维护。
+- 确认 `model/decoder/model.py` 中的 `utils.train_utils.Variable` 只在这一处出现，属于孤立的历史遗留导入。
+- 已删除 `model/decoder/model.py` 中未使用的 `utils.train_utils.Variable` 导入，decoder 代码现在可以直接被导入。
+- 确认 `model/encoder/encoders.py` 当前默认 tokenizer 设置会 lower-case SMILES；显式传 `do_lower_case=False` 后才符合化学语义。
+- 确认重新上传后的 `model/encoder/.../checkpoint.pt` 和 `model/decoder/.../SMILES-650M-3B-Epoch1.pt` 都可以被 `torch.load` 正常读取，且 decoder 权重与当前 GPT 结构严格匹配。
+- 新增 `model/RETROSYNTHESIS_PLAN.md`，把当前 encoder、decoder 和 `model/data/` 的单步逆合成实施路径整理成一份可执行计划书。
+- 同步修正了 `memory-bank/architecture.md` 中关于 `model/decoder` 导入问题和权重状态的过期描述。
 
 ### 当前判断
 
@@ -36,8 +42,9 @@
   `gp_core/config.py`
   `gp_core/data_loading.py`
   后续如果任务碰到这两个文件，先重新检查 `git status`，不要覆盖已有工作。
-- `model/decoder/model.py` 目前导入会卡在 `from utils.train_utils import Variable`；这是项目内缺少模块，不是 `pip` 包缺失。
+- `model/decoder/model.py` 的孤立历史导入已经移除；如果后续还有导入错误，需要按新的实际 traceback 重新判断。
 - `model/encoder` 和 `model/decoder` 词表 token 集基本兼容，但大多数普通 token 的 id 不同，后续不能直接假设“同 token 同 id”。
+- 当前已经可以做“真实预训练权重前向”级别的静态学习与 shape 验证；但还没有开始任何训练或生成实验。
 
 ### 尚未做的事
 

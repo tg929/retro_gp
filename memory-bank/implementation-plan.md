@@ -27,6 +27,8 @@
   `scripts/`
 - encoder/decoder 预训练部件与未来对齐模块：
   `model/`
+  如果任务是基于当前 encoder/decoder 做单步逆合成训练，先读
+  `model/RETROSYNTHESIS_PLAN.md`
 
 ## Validation Ladder
 

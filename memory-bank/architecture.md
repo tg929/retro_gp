@@ -62,6 +62,7 @@
 - `model/data/train.csv`: 训练集，列为 `class` 和空格切分后的 `reactants>reagents>production`。
 - `model/data/eval.csv`: 验证集。
 - `model/data/test.csv`: 测试集。
+- `model/RETROSYNTHESIS_PLAN.md`: 针对当前 encoder、decoder 和 USPTO-full 风格数据集的单步逆合成实施计划书。
 - `model/encoder/`: BERT 风格 encoder 目录。
 - `model/encoder/local_bert.py`: 自定义双向 Transformer encoder，含 embedding、bidirectional self-attention、pooler、MLM head。
 - `model/encoder/encoders.py`: encoder 包装层，负责按 spec 构建本地 BERT 或 HuggingFace encoder。
@@ -69,13 +70,15 @@
 - `model/encoder/MolEncoder-SMILES-Drug-1.2B/encoder.yaml`: encoder 结构配置，目前是 `24 x 32 x 2048`。
 - `model/encoder/MolEncoder-SMILES-Drug-1.2B/checkpoint.pt`: encoder 预训练权重。
 - `model/encoder/MolEncoder-SMILES-Drug-1.2B/vocab.txt`: encoder 词表。
+- 当前源码里 `LocalBertEncoder` 构造 `SmilesTokenizer` 时没有显式传 `do_lower_case=False`，会把 `C/O` 等 token 降成小写，破坏化学语义。
 - `model/decoder/`: GPT 风格 decoder 目录。
 - `model/decoder/model.py`: 自回归 GPT 模型，使用 causal attention 和 RoPE，当前没有 cross-attention。
 - `model/decoder/tokenizer.py`: decoder 专用 SMILES tokenizer，明确重写了 regex 分词逻辑。
 - `model/decoder/loadmodel_example.py`: decoder 加载与生成示例。
 - `model/decoder/vocabs/vocab.txt`: decoder 词表。
 - `model/decoder/weights/SMILES-650M-3B-Epoch1.pt`: decoder 权重。
-- 当前已确认 `model/decoder/model.py` 导入时依赖 `utils.train_utils`，该模块目前不在本仓库中；这是项目内缺失依赖，不是第三方包缺失。
+- 当前已删除 `model/decoder/model.py` 中孤立的 `utils.train_utils.Variable` 历史导入，decoder 代码现在可以直接导入。
+- 当前已确认 encoder 和 decoder 的 `.pt` 权重文件都可以被 `torch.load` 正常读取，并且 decoder 权重与当前 GPT 结构严格匹配。
 
 ## Core Search Layer
 
