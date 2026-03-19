@@ -143,7 +143,17 @@ def move_batch(batch, device):
     return {k: v.to(device) for k, v in batch.items()}
 
 
-def evaluate(model, dataloader, device, max_batches=None):
+def decode_tokens(tokenizer, token_ids):
+    text = tokenizer.decode(token_ids)
+    text = text.replace(" ", "")
+    text = text.replace(tokenizer.bos_token or "", "")
+    text = text.replace(tokenizer.eos_token or "", "")
+    text = text.replace(tokenizer.sep_token or "", "")
+    text = text.replace(tokenizer.pad_token or "", "")
+    return text
+
+
+def evaluate_loss(model, dataloader, device, max_batches=None):
     model.eval()
     total_loss = 0.0
     total_batches = 0
@@ -157,6 +167,35 @@ def evaluate(model, dataloader, device, max_batches=None):
             total_batches += 1
     model.train()
     return total_loss / max(total_batches, 1)
+
+
+def evaluate_generation(model, dataset, collator, device, sample_count, max_new_tokens, beam_width):
+    total = min(sample_count, len(dataset))
+    matches = 0
+    examples = []
+
+    model.eval()
+    with torch.no_grad():
+        for idx in range(total):
+            item = dataset[idx]
+            batch = collator([item])
+            batch = move_batch(batch, device)
+            pred_ids = model.generate(
+                batch["product_input_ids"],
+                batch["product_attention_mask"],
+                max_new_tokens=max_new_tokens,
+                temperature=0.0,
+                top_k=None,
+                beam_width=beam_width,
+            )
+            pred = decode_tokens(model.decoder_tokenizer, pred_ids[0].tolist())
+            target = item["reactants"].replace(" ", "")
+            product = item["product"].replace(" ", "")
+            match = pred == target
+            matches += int(match)
+            examples.append((product, target, pred, match))
+    model.train()
+    return matches / max(total, 1), examples
 
 
 def count_trainable_params(model):
@@ -181,6 +220,10 @@ def parse_args():
     parser.add_argument("--limit-eval", type=int, default=None)
     parser.add_argument("--max-train-steps", type=int, default=None)
     parser.add_argument("--max-eval-batches", type=int, default=None)
+    parser.add_argument("--generation-eval-samples", type=int, default=0)
+    parser.add_argument("--generation-max-new-tokens", type=int, default=128)
+    parser.add_argument("--generation-beam-width", type=int, default=1)
+    parser.add_argument("--preview-samples", type=int, default=3)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args()
 
@@ -228,8 +271,27 @@ def main():
             if args.max_train_steps is not None and global_step >= args.max_train_steps:
                 break
 
-        eval_loss = evaluate(model, eval_loader, device, args.max_eval_batches)
+        eval_loss = evaluate_loss(model, eval_loader, device, args.max_eval_batches)
         print(f"epoch={epoch} eval_loss={eval_loss:.6f}")
+
+        generation_exact = None
+        preview_examples = []
+        if args.generation_eval_samples > 0:
+            generation_exact, preview_examples = evaluate_generation(
+                model,
+                eval_dataset,
+                collator,
+                device,
+                args.generation_eval_samples,
+                args.generation_max_new_tokens,
+                args.generation_beam_width,
+            )
+            print(f"epoch={epoch} generation_exact={generation_exact:.6f}")
+            for product, target, pred, match in preview_examples[:args.preview_samples]:
+                print(f"preview_match={int(match)}")
+                print(f"preview_product={product}")
+                print(f"preview_target={target}")
+                print(f"preview_pred={pred}")
 
         if best_eval is None or eval_loss < best_eval:
             best_eval = eval_loss
@@ -240,6 +302,7 @@ def main():
                     "epoch": epoch,
                     "global_step": global_step,
                     "eval_loss": eval_loss,
+                    "generation_exact": generation_exact,
                     "stage": args.stage,
                 },
                 save_dir / "best.pt",

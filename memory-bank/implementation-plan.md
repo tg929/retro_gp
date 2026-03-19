@@ -45,8 +45,11 @@
 - 改 NAG2G 适配：
   先跑 `python scripts/inspect_nag2g_one_step.py ...`
   再跑单目标 `run_real_data_gp.py`
+- 改 `model/` 下的单步逆合成训练链路：
+  先跑 `python model/train_retrosynthesis.py --stage 1 --batch-size 1 --epochs 1 --limit-train 2 --limit-eval 1 --max-train-steps 1 --device cuda`
+  再按需要加上 `--generation-eval-samples 1 --preview-samples 1` 验证生成评估路径。
 - 学习或检查 `model/`：
-  优先做静态导入、tokenizer 行为检查、数据字段拆分检查，不要一开始就写训练脚本。
+  优先做静态导入、tokenizer 行为检查、数据字段拆分检查，再做最小训练 smoke。
 
 ## Benchmark Invariants
 

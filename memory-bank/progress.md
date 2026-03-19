@@ -63,7 +63,7 @@
 - 同步更新了 `memory-bank/architecture.md`，把 `model/encoder` 相关状态改成当前真实实现。
 - 在 `model/decoder/model.py` 中加入了可选 cross-attention，并把条件 memory 透传到了 `forward()`、`generate()`、`beam_search_generate()` 路径。
 - 新增 `model/retro_model.py`，把 frozen encoder、轻量 aligner 和 conditional decoder 组装成一个最小可训练模型。
-- 新增 `model/train_retrosynthesis.py`，实现了 CSV 数据集读取、collator、Stage 1 / Stage 2 冻结策略、训练循环、eval 和 checkpoint 保存。
+- 新增 `model/train_retrosynthesis.py`，实现了 CSV 数据集读取、collator、Stage 1 / Stage 2 冻结策略、训练循环、loss eval、生成预览和 checkpoint 保存。
 
 ### 验证
 
@@ -80,8 +80,36 @@
   `train_loss = 5.283941`
   `eval_loss = 6.767875`
   并成功保存 `model/checkpoints_smoke/best.pt`
+- 跑通了带生成评估的 smoke test：
+  `python model/train_retrosynthesis.py --stage 1 --batch-size 1 --epochs 1 --limit-train 2 --limit-eval 1 --max-train-steps 1 --generation-eval-samples 1 --preview-samples 1 --device cuda ...`
+  输出：
+  `train_loss = 4.627955`
+  `eval_loss = 5.943709`
+  `generation_exact = 0.000000`
+  并打印了一条 `product / target / pred` 预览样本，确认生成评估路径已接通；对应 checkpoint 已保存到 `model/checkpoints_smoke_preview/best.pt`
+- 跑了一个更像样的 Stage 1 子集实验：
+  `python model/train_retrosynthesis.py --stage 1 --batch-size 2 --epochs 1 --limit-train 32 --limit-eval 4 --max-train-steps 10 --generation-eval-samples 2 --preview-samples 2 --device cuda ...`
+  输出显示：
+  `train_loss` 从 `5.608910` 降到 `3.008404`
+  `eval_loss = 2.573587`
+  `generation_exact = 0.000000`
+  预览生成仍然塌缩为长串重复的 `c`，说明当前 Stage 1 在极小步数下已经学到 token-level loss，但还没有学到可用的条件化生成行为。
+- 又跑了一个更长的 Stage 1 子集实验：
+  `python model/train_retrosynthesis.py --stage 1 --batch-size 2 --epochs 1 --limit-train 256 --limit-eval 16 --max-train-steps 50 --generation-eval-samples 4 --preview-samples 2 --device cuda ...`
+  输出显示：
+  `train_loss` 从 `5.539189` 降到 `2.372203`
+  `eval_loss = 2.487176`
+  `generation_exact = 0.000000`
+  预览生成依然是长串重复的 `c`，说明仅靠当前 Stage 1 设置，在 50 步量级内还没有把“条件通道可训练”转化成“可用的条件化生成”。
+- 跑了一个 Stage 2 小规模对照实验：
+  `python model/train_retrosynthesis.py --stage 2 --trainable-decoder-blocks 4 --batch-size 2 --epochs 1 --limit-train 128 --limit-eval 8 --max-train-steps 20 --lr 1e-4 --decoder-lr 1e-5 --generation-eval-samples 2 --preview-samples 2 --device cuda ...`
+  输出显示：
+  `trainable_params = 429307904`
+  `eval_loss = 2.729984`
+  `generation_exact = 0.000000`
+  预览生成仍然塌缩为长串重复的 `c`，说明在当前小样本、短步数设置下，提前解冻顶部 4 层 decoder 也没有立刻带来可见的条件化生成改善。
 
 ### 当前判断
 
 - encoder 这边最容易直接污染训练结论的两个问题已经压住了。
-- 现在最小 Stage 1 训练闭环已经打通，下一步重点不再是结构接线，而是训练效率、评估口径和 Stage 2 解冻策略。
+- 现在最小 Stage 1 训练闭环、生成评估闭环、两档 Stage 1 子集试跑和一档 Stage 2 对照试跑都已经打通，下一步重点不再是结构接线，而是基于当前“loss 降、生成仍塌缩”的信号，优先决定正式实验该先拉长 Stage 1、调整学习率分组，还是重构生成/评估口径。
