@@ -88,6 +88,18 @@ def pad_batch(sequences, pad_id):
     return batch, mask
 
 
+def build_train_loader(dataset, batch_size, collate_fn, seed, epoch):
+    generator = torch.Generator()
+    generator.manual_seed(seed + epoch)
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=collate_fn,
+        generator=generator,
+    )
+
+
 def freeze_module(module):
     for p in module.parameters():
         p.requires_grad = False
@@ -250,6 +262,22 @@ def save_model_snapshot(save_dir, global_step, model, meta):
     save_json(latest_meta_path, meta)
 
 
+def build_resume_checkpoint_paths(save_dir, global_step):
+    stem = f"resume_step_{global_step:08d}"
+    return save_dir / f"{stem}.pt", save_dir / f"{stem}.json"
+
+
+def save_resume_snapshot(save_dir, global_step, model, optimizer, meta):
+    step_resume_path, step_meta_path = build_resume_checkpoint_paths(save_dir, global_step)
+    latest_resume_path = save_dir / "latest_resume.pt"
+    latest_resume_meta_path = save_dir / "latest_resume.json"
+    payload = {"model": model.state_dict(), "optimizer": optimizer.state_dict(), **meta}
+    save_torch(step_resume_path, payload)
+    save_json(step_meta_path, meta)
+    save_torch(latest_resume_path, payload)
+    save_json(latest_resume_meta_path, meta)
+
+
 def build_curve_points(rows, key, min_loss, max_loss, max_step, width, height, pad):
     plot_width = width - 2 * pad
     plot_height = height - 2 * pad
@@ -306,6 +334,17 @@ def load_init_checkpoint(model, checkpoint_path):
     model.load_state_dict(state_dict, strict=False)
 
 
+def load_resume_checkpoint(model, optimizer, checkpoint_path, device):
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    model.load_state_dict(checkpoint["model"], strict=False)
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    for state in optimizer.state.values():
+        for key, value in state.items():
+            if torch.is_tensor(value):
+                state[key] = value.to(device)
+    return checkpoint
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-csv", default="model/data/train.csv")
@@ -313,7 +352,9 @@ def parse_args():
     parser.add_argument("--save-dir", default="model/checkpoints")
     parser.add_argument("--results-dir", default="model/results/test")
     parser.add_argument("--init-checkpoint", default=None)
+    parser.add_argument("--resume-from", default=None)
     parser.add_argument("--save-every-steps", type=int, default=None)
+    parser.add_argument("--resume-every-steps", type=int, default=None)
     parser.add_argument("--disable-eval", action="store_true")
     parser.add_argument("--stage", type=int, choices=[1, 2], default=1)
     parser.add_argument("--epochs", type=int, default=1)
@@ -332,6 +373,7 @@ def parse_args():
     parser.add_argument("--generation-max-new-tokens", type=int, default=128)
     parser.add_argument("--generation-beam-width", type=int, default=1)
     parser.add_argument("--preview-samples", type=int, default=3)
+    parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args()
 
@@ -339,11 +381,18 @@ def parse_args():
 def main():
     args = parse_args()
     device = torch.device(args.device)
+    if args.init_checkpoint is not None and args.resume_from is not None:
+        raise ValueError("--init-checkpoint and --resume-from cannot be used together")
 
     model = RetrosynthesisModel().to(device)
-    if args.init_checkpoint is not None:
-        load_init_checkpoint(model, args.init_checkpoint)
     configure_training_stage(model, args.stage, args.trainable_decoder_blocks)
+    optimizer = build_optimizer(model, args.lr, args.decoder_lr, args.weight_decay)
+    if args.resume_from is not None:
+        resume_state = load_resume_checkpoint(model, optimizer, args.resume_from, device)
+    else:
+        resume_state = None
+        if args.init_checkpoint is not None:
+            load_init_checkpoint(model, args.init_checkpoint)
 
     train_dataset = ReactionDataset(args.train_csv, args.limit_train)
     collator = RetrosynthesisCollator(
@@ -353,14 +402,12 @@ def main():
         args.max_reactants_len,
     )
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=collator)
     eval_dataset = None
     eval_loader = None
     if not args.disable_eval:
         eval_dataset = ReactionDataset(args.eval_csv, args.limit_eval)
         eval_loader = DataLoader(eval_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collator)
 
-    optimizer = build_optimizer(model, args.lr, args.decoder_lr, args.weight_decay)
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
     results_dir = Path(args.results_dir)
@@ -370,12 +417,14 @@ def main():
     print(f"trainable_params={trainable_params}")
 
     train_loss_path = results_dir / "train_loss.csv"
-    init_csv(train_loss_path, ["epoch", "global_step", "train_loss"])
     eval_metrics_path = results_dir / "eval_metrics.csv"
     generation_examples_path = results_dir / "generation_examples.csv"
     loss_curve_path = results_dir / "loss_curve.svg"
-    if not args.disable_eval:
+    if args.resume_from is None or not train_loss_path.exists():
+        init_csv(train_loss_path, ["epoch", "global_step", "train_loss"])
+    if not args.disable_eval and (args.resume_from is None or not eval_metrics_path.exists()):
         init_csv(eval_metrics_path, ["epoch", "global_step", "eval_loss", "generation_exact"])
+    if not args.disable_eval and (args.resume_from is None or not generation_examples_path.exists()):
         init_csv(
             generation_examples_path,
             ["epoch", "sample_idx", "match", "decoder_input", "product", "target", "pred"],
@@ -383,16 +432,30 @@ def main():
     save_json(results_dir / "run_config.json", {**vars(args), "trainable_params": trainable_params})
 
     best_eval = None
+    start_epoch = 0
+    resume_epoch_step = 0
     global_step = 0
     last_epoch = -1
     last_train_loss = None
     train_history = []
     eval_history = []
+    if resume_state is not None:
+        start_epoch = resume_state.get("epoch", 0)
+        resume_epoch_step = resume_state.get("epoch_step", 0)
+        global_step = resume_state.get("global_step", 0)
+        print(
+            f"resuming_from={args.resume_from} epoch={start_epoch} "
+            f"epoch_step={resume_epoch_step} global_step={global_step}"
+        )
     model.train()
 
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         last_epoch = epoch
-        for batch in train_loader:
+        train_loader = build_train_loader(train_dataset, args.batch_size, collator, args.seed, epoch)
+        skip_batches = resume_epoch_step if epoch == start_epoch else 0
+        for batch_idx, batch in enumerate(train_loader):
+            if batch_idx < skip_batches:
+                continue
             batch = move_batch(batch, device)
             optimizer.zero_grad(set_to_none=True)
             _, loss, _ = model(**batch)
@@ -417,6 +480,22 @@ def main():
                     model,
                     {
                         "epoch": epoch,
+                        "epoch_step": batch_idx + 1,
+                        "global_step": global_step,
+                        "train_loss": float(loss.item()),
+                        "stage": args.stage,
+                    },
+                )
+
+            if args.resume_every_steps is not None and global_step % args.resume_every_steps == 0:
+                save_resume_snapshot(
+                    save_dir,
+                    global_step,
+                    model,
+                    optimizer,
+                    {
+                        "epoch": epoch,
+                        "epoch_step": batch_idx + 1,
                         "global_step": global_step,
                         "train_loss": float(loss.item()),
                         "stage": args.stage,
@@ -425,6 +504,8 @@ def main():
 
             if args.max_train_steps is not None and global_step >= args.max_train_steps:
                 break
+
+        resume_epoch_step = 0
 
         if not args.disable_eval:
             eval_loss = evaluate_loss(model, eval_loader, device, args.max_eval_batches)
@@ -491,6 +572,14 @@ def main():
 
     final_meta = {
         "epoch": last_epoch,
+        "epoch_step": 0,
+        "global_step": global_step,
+        "train_loss": last_train_loss,
+        "stage": args.stage,
+    }
+    final_resume_meta = {
+        "epoch": max(last_epoch + 1, 0),
+        "epoch_step": 0,
         "global_step": global_step,
         "train_loss": last_train_loss,
         "stage": args.stage,
@@ -499,6 +588,16 @@ def main():
     save_json(save_dir / "final_model.json", final_meta)
     save_torch(save_dir / "latest_model.pt", model.state_dict())
     save_json(save_dir / "latest_model.json", final_meta)
+    save_torch(
+        save_dir / "final_resume.pt",
+        {"model": model.state_dict(), "optimizer": optimizer.state_dict(), **final_resume_meta},
+    )
+    save_json(save_dir / "final_resume.json", final_resume_meta)
+    save_torch(
+        save_dir / "latest_resume.pt",
+        {"model": model.state_dict(), "optimizer": optimizer.state_dict(), **final_resume_meta},
+    )
+    save_json(save_dir / "latest_resume.json", final_resume_meta)
 
 
 if __name__ == "__main__":

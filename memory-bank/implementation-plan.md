@@ -51,7 +51,7 @@
   训练时默认会把 `train_loss.csv`、`eval_metrics.csv`、`generation_examples.csv`、`loss_curve.svg` 和 `run_config.json` 落到 `model/results/test/`。
   如果要在 Stage 1 结果上继续做 Stage 2，当前脚本已支持 `--init-checkpoint` 做模型权重 warm-start。
   如果要边训练边测试，训练脚本可加 `--save-every-steps N`，把最新权重持续写到 `save_dir/latest_model.pt`，再用 `python model/evaluate_checkpoint.py --checkpoint ...` 单独测试。
-  当前推荐的 full-data Stage 1 工作流是：训练主进程加 `--disable-eval --save-every-steps 36000`，只做纯训练和 step 级 `train_loss.csv` 落盘；训练过程中按 `model_step_XXXXXXXX.pt` 追加保存 checkpoint，并同步更新 `latest_model.pt`；训练结束固定生成 `final_model.pt`。独立测试进程默认用 `python model/evaluate_checkpoint.py --checkpoint ... --csv model/data/eval.csv` 做 checkpoint 评估，不在训练进程里碰测试集。
+  当前推荐的 full-data Stage 1 工作流是：训练主进程加 `--disable-eval --save-every-steps 36000`，只做纯训练和 step 级 `train_loss.csv` 落盘；训练过程中按 `model_step_XXXXXXXX.pt` 追加保存评估用 checkpoint，并同步更新 `latest_model.pt`；如果需要防止长训被 kill 后只能回退到很早的权重，再额外设置 `--resume-every-steps N` 生成 `resume_step_XXXXXXXX.pt` / `latest_resume.pt` 供断点续训。独立测试进程默认用 `python model/evaluate_checkpoint.py --checkpoint ... --csv model/data/eval.csv` 做 checkpoint 评估，不在训练进程里碰测试集。
 - 学习或检查 `model/`：
   优先做静态导入、tokenizer 行为检查、数据字段拆分检查，再做最小训练 smoke。
 

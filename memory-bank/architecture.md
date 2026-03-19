@@ -64,7 +64,7 @@
 - `model/data/test.csv`: 测试集。
 - `model/RETROSYNTHESIS_PLAN.md`: 针对当前 encoder、decoder 和 USPTO-full 风格数据集的单步逆合成实施计划书。
 - `model/retro_model.py`: 当前单步逆合成组合模型，负责组装 frozen encoder、aligner 和带 cross-attention 的 decoder。
-- `model/train_retrosynthesis.py`: 当前训练脚本，包含 CSV 数据集读取、collator、两阶段冻结策略、`--init-checkpoint` warm-start、`--disable-eval` 纯训练模式，以及 `--save-every-steps` 的追加式 `model_step_XXXXXXXX.pt` 保存、`latest_model.pt` 更新和 `final_model.pt` 写出逻辑。
+- `model/train_retrosynthesis.py`: 当前训练脚本，包含 CSV 数据集读取、collator、两阶段冻结策略、`--init-checkpoint` warm-start、`--resume-from` 断点续训、`--disable-eval` 纯训练模式，以及 `--save-every-steps` 的追加式 `model_step_XXXXXXXX.pt` 保存、`--resume-every-steps` 的 `resume_step_XXXXXXXX.pt` 保存、`latest_*` 更新和 `final_*` 写出逻辑。
 - `model/evaluate_checkpoint.py`: 独立 checkpoint 测试脚本，默认使用 `model/data/eval.csv`，可直接加载训练过程中保存的模型权重，对指定 CSV 跑 eval loss 和生成预览。
 - `model/results/`: 训练过程输出目录。
 - `model/results/test/`: 当前默认结果落盘目录，保存训练 loss、eval 指标、生成样本、loss 曲线和运行配置。
@@ -89,10 +89,16 @@
 - `model/checkpoints_smoke_preview/best.pt`: 一次带生成预览的 Stage 1 smoke train 产生的 checkpoint，用来确认生成评估路径可跑通。
 - `model/checkpoints_*/model_step_XXXXXXXX.pt`: 当训练脚本设置 `--save-every-steps` 时，按步追加保存的 model-only 权重，命名与 step 对齐，便于并行测试和回溯。
 - `model/checkpoints_*/model_step_XXXXXXXX.json`: 对应追加式 checkpoint 的轻量元信息，记录 epoch、global_step、train_loss、stage。
+- `model/checkpoints_*/resume_step_XXXXXXXX.pt`: 当训练脚本设置 `--resume-every-steps` 时，按步追加保存的 full resume checkpoint，包含 model、optimizer 和续训所需元信息。
+- `model/checkpoints_*/resume_step_XXXXXXXX.json`: 对应 full resume checkpoint 的轻量元信息。
 - `model/checkpoints_*/latest_model.pt`: 当训练脚本设置 `--save-every-steps` 时，按步覆盖更新的最新 model-only 权重，供并行测试读取。
 - `model/checkpoints_*/latest_model.json`: 对应 `latest_model.pt` 的轻量元信息，记录当前保存到哪个 step。
+- `model/checkpoints_*/latest_resume.pt`: 当前最新的 full resume checkpoint，供断点续训读取。
+- `model/checkpoints_*/latest_resume.json`: 对应 `latest_resume.pt` 的轻量元信息。
 - `model/checkpoints_*/final_model.pt`: 训练结束时固定写出的最终 model-only 权重。
 - `model/checkpoints_*/final_model.json`: 对应最终权重的轻量元信息。
+- `model/checkpoints_*/final_resume.pt`: 训练结束时固定写出的最终 full resume checkpoint。
+- `model/checkpoints_*/final_resume.json`: 对应最终 full resume checkpoint 的轻量元信息。
 - `model/results/test/train_loss.csv`: 训练 step 级 loss 记录。
 - `model/results/test/eval_metrics.csv`: epoch 级 eval 指标记录。
 - `model/results/test/generation_examples.csv`: 生成预览样本记录，包含 `product / decoder_input / target / pred / match`。

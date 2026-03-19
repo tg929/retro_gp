@@ -144,6 +144,13 @@
 - 同步调整了 `model/evaluate_checkpoint.py` 默认评估集合，从 `model/data/test.csv` 改为 `model/data/eval.csv`，更符合“训练中途评估不用测试集”的当前策略。
 - 用 `python -m py_compile model/train_retrosynthesis.py model/evaluate_checkpoint.py`
   验证了这轮改动的语法正确性；本轮没有启动新的训练。
+- 在训练被系统 `Killed` 后，又补上了双轨 checkpoint 和断点续训支持：
+  `model/train_retrosynthesis.py` 新增 `--resume-from` 和 `--resume-every-steps`；
+  高频 `model_step_XXXXXXXX.pt` 继续作为评估用 model-only checkpoint，
+  低频 `resume_step_XXXXXXXX.pt` / `latest_resume.pt` / `final_resume.pt` 则保存 model + optimizer + 续训元信息；
+  训练集 DataLoader 改为按 `seed + epoch` 的确定性打乱，resume 时会按保存下来的 `epoch_step` 跳过当前 epoch 已处理的 batch，尽量恢复到被 kill 前的位置。
+- 用 `python -m py_compile model/train_retrosynthesis.py model/evaluate_checkpoint.py`
+  再次验证了 resume 相关改动的语法正确性；本轮仍未启动新的训练。
 
 ### 当前判断
 
