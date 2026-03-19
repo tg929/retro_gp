@@ -61,13 +61,27 @@
   `model/encoder/local_bert.py` 现在会把传入的 `attention_mask` 真正送进 self-attention
 - 保持了 encoder 代码改动最小，只修训练前必须修的两处行为问题，没有提前引入训练脚本或额外抽象层。
 - 同步更新了 `memory-bank/architecture.md`，把 `model/encoder` 相关状态改成当前真实实现。
+- 在 `model/decoder/model.py` 中加入了可选 cross-attention，并把条件 memory 透传到了 `forward()`、`generate()`、`beam_search_generate()` 路径。
+- 新增 `model/retro_model.py`，把 frozen encoder、轻量 aligner 和 conditional decoder 组装成一个最小可训练模型。
+- 新增 `model/train_retrosynthesis.py`，实现了 CSV 数据集读取、collator、Stage 1 / Stage 2 冻结策略、训练循环、eval 和 checkpoint 保存。
 
 ### 验证
 
 - 用真实 encoder checkpoint 和 `model/data/train.csv` 第一条 product 验证 tokenizer 输出，确认 `C/O/N` 等大写 token 被保留，没有再被 lower-case。
 - 用同一条 product 做“单独前向”和“带 padding 前向”的对比，非 pad 位置输出最大差为 `3.052e-05`，说明 padding mask 已经生效。
+- 在真实权重上完成了 2 条样本的组合模型前向和反向，得到：
+  `logits_shape = (2, 60, 591)`
+  `loss = 5.316456`
+  `self_attn_layers = 13`
+  并确认 Stage 1 可训练参数已经拿到梯度。
+- 跑通了 `python model/train_retrosynthesis.py --stage 1 --batch-size 1 --epochs 1 --limit-train 2 --limit-eval 1 --max-train-steps 1 --device cuda ...`
+  smoke test，输出：
+  `trainable_params = 227874816`
+  `train_loss = 5.283941`
+  `eval_loss = 6.767875`
+  并成功保存 `model/checkpoints_smoke/best.pt`
 
 ### 当前判断
 
 - encoder 这边最容易直接污染训练结论的两个问题已经压住了。
-- 接下来可以进入 decoder cross-attention 和最小训练链路的实现，不必再在 encoder 输入语义和 pad 污染上反复排错。
+- 现在最小 Stage 1 训练闭环已经打通，下一步重点不再是结构接线，而是训练效率、评估口径和 Stage 2 解冻策略。

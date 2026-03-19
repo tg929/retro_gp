@@ -63,6 +63,8 @@
 - `model/data/eval.csv`: 验证集。
 - `model/data/test.csv`: 测试集。
 - `model/RETROSYNTHESIS_PLAN.md`: 针对当前 encoder、decoder 和 USPTO-full 风格数据集的单步逆合成实施计划书。
+- `model/retro_model.py`: 当前单步逆合成组合模型，负责组装 frozen encoder、aligner 和带 cross-attention 的 decoder。
+- `model/train_retrosynthesis.py`: 当前最小训练脚本，包含 CSV 数据集读取、collator、两阶段冻结策略、训练循环和 eval/checkpoint 逻辑。
 - `model/encoder/`: BERT 风格 encoder 目录。
 - `model/encoder/local_bert.py`: 自定义双向 Transformer encoder，含 embedding、bidirectional self-attention、pooler、MLM head。
 - `model/encoder/encoders.py`: encoder 包装层，负责按 spec 构建本地 BERT 或 HuggingFace encoder。
@@ -73,13 +75,14 @@
 - 当前源码里 `LocalBertEncoder` 已显式使用 `do_lower_case=False`，encoder tokenizer 会保留 `C/O/N` 等化学 token 的大小写语义。
 - 当前 `local_bert.py` 里的 bidirectional self-attention 已实际使用传入的 `attention_mask`，batch + padding 前向不会再把 pad 位当成有效上下文。
 - `model/decoder/`: GPT 风格 decoder 目录。
-- `model/decoder/model.py`: 自回归 GPT 模型，使用 causal attention 和 RoPE，当前没有 cross-attention。
+- `model/decoder/model.py`: 自回归 GPT 模型，使用 causal attention 和 RoPE；当前已支持可选 cross-attention，用于读取 encoder memory。
 - `model/decoder/tokenizer.py`: decoder 专用 SMILES tokenizer，明确重写了 regex 分词逻辑。
 - `model/decoder/loadmodel_example.py`: decoder 加载与生成示例。
 - `model/decoder/vocabs/vocab.txt`: decoder 词表。
 - `model/decoder/weights/SMILES-650M-3B-Epoch1.pt`: decoder 权重。
 - 当前已删除 `model/decoder/model.py` 中孤立的 `utils.train_utils.Variable` 历史导入，decoder 代码现在可以直接导入。
 - 当前已确认 encoder 和 decoder 的 `.pt` 权重文件都可以被 `torch.load` 正常读取，并且 decoder 权重与当前 GPT 结构严格匹配。
+- `model/checkpoints_smoke/best.pt`: 一次 Stage 1 一步 smoke train 产生的最小 checkpoint，用来确认训练链路可跑通。
 
 ## Core Search Layer
 

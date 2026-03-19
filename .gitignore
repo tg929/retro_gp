@@ -18,3 +18,5 @@ NAG2G-main/*
 ASKCOS/*
 logs/*
 model/*
+!model/
+!model/**/*.py
