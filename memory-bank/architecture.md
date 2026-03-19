@@ -65,6 +65,7 @@
 - `model/RETROSYNTHESIS_PLAN.md`: 针对当前 encoder、decoder 和 USPTO-full 风格数据集的单步逆合成实施计划书。
 - `model/retro_model.py`: 当前单步逆合成组合模型，负责组装 frozen encoder、aligner 和带 cross-attention 的 decoder。
 - `model/train_retrosynthesis.py`: 当前最小训练脚本，包含 CSV 数据集读取、collator、两阶段冻结策略、训练循环、loss eval、生成预览和 checkpoint 逻辑。
+- `model/train_retrosynthesis.py`: 当前最小训练脚本，包含 CSV 数据集读取、collator、两阶段冻结策略、训练循环、loss eval、生成预览、`--init-checkpoint` warm-start 和 checkpoint 逻辑。
 - `model/results/`: 训练过程输出目录。
 - `model/results/test/`: 当前默认结果落盘目录，保存训练 loss、eval 指标、生成样本、loss 曲线和运行配置。
 - `model/encoder/`: BERT 风格 encoder 目录。

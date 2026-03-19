@@ -279,12 +279,19 @@ def save_loss_curve(train_history, eval_history, path):
     path.write_text(svg, encoding="utf-8")
 
 
+def load_init_checkpoint(model, checkpoint_path):
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
+    model.load_state_dict(state_dict, strict=False)
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-csv", default="model/data/train.csv")
     parser.add_argument("--eval-csv", default="model/data/eval.csv")
     parser.add_argument("--save-dir", default="model/checkpoints")
     parser.add_argument("--results-dir", default="model/results/test")
+    parser.add_argument("--init-checkpoint", default=None)
     parser.add_argument("--stage", type=int, choices=[1, 2], default=1)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -311,6 +318,8 @@ def main():
     device = torch.device(args.device)
 
     model = RetrosynthesisModel().to(device)
+    if args.init_checkpoint is not None:
+        load_init_checkpoint(model, args.init_checkpoint)
     configure_training_stage(model, args.stage, args.trainable_decoder_blocks)
 
     train_dataset = ReactionDataset(args.train_csv, args.limit_train)

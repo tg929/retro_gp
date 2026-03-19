@@ -111,8 +111,24 @@
 - 继续增强了 `model/train_retrosynthesis.py` 的结果落盘能力，新增 `--results-dir`，训练时会把 step 级 `train_loss.csv`、epoch 级 `eval_metrics.csv`、生成预览 `generation_examples.csv`、`loss_curve.svg` 和 `run_config.json` 一起写出。
 - 用 `python model/train_retrosynthesis.py --stage 1 --batch-size 1 --epochs 1 --limit-train 2 --limit-eval 1 --max-train-steps 1 --generation-eval-samples 1 --preview-samples 1 --device cuda --results-dir /data1/ytg/retrogp/model/results/test ...`
   验证了结果目录落盘逻辑，确认上述五个文件都会生成，且 `generation_examples.csv` 已能直接看到 `product / decoder_input / target / pred / match`。
+- 跑完了一轮正式的 Stage 1：
+  `python model/train_retrosynthesis.py --stage 1 --batch-size 2 --epochs 1 --max-train-steps 5000 --lr 1e-4 --decoder-lr 1e-5 --max-eval-batches 128 --generation-eval-samples 8 --preview-samples 4 --device cuda --save-dir /data1/ytg/retrogp/model/checkpoints_stage1_formal --results-dir /data1/ytg/retrogp/model/results/test`
+  结果为：
+  `eval_loss = 1.660985`
+  `generation_exact = 0.0`
+  train loss 从前 5 步均值 `4.665` 降到最后 50 步均值 `1.760`
+  但生成仍明显塌缩，尚未得到可用的条件化 reactants 输出。
+- 给 `model/train_retrosynthesis.py` 增加了最小 warm-start 能力，新增 `--init-checkpoint`，可从已有模型权重继续起下一阶段训练。
+- 从 `checkpoints_stage1_formal/best.pt` 提炼出只含模型参数的 `checkpoints_stage1_formal/model_only.pt`，避免后续 warm-start 每次都加载 9.6G 的完整优化器状态。
+- 按推荐矩阵先跑了 `test1`：
+  `python model/train_retrosynthesis.py --init-checkpoint /data1/ytg/retrogp/model/checkpoints_stage1_formal/model_only.pt --stage 2 --trainable-decoder-blocks 4 --batch-size 2 --epochs 1 --max-train-steps 2000 --lr 5e-5 --decoder-lr 5e-6 --max-eval-batches 128 --generation-eval-samples 8 --preview-samples 4 --device cuda --save-dir /data1/ytg/retrogp/model/checkpoints_stage2_test1 --results-dir /data1/ytg/retrogp/model/results/test1`
+  结果为：
+  `eval_loss = 1.683021`
+  `generation_exact = 0.0`
+  生成分布相比纯 Stage 1 末尾稍有变化，不再只是单一长串 `c`，但仍然严重塌缩，离可用输出还有明显距离。
 
 ### 当前判断
 
 - encoder 这边最容易直接污染训练结论的两个问题已经压住了。
-- 现在最小 Stage 1 训练闭环、生成评估闭环、结果落盘闭环、两档 Stage 1 子集试跑和一档 Stage 2 对照试跑都已经打通，下一步重点不再是结构接线，而是基于当前“loss 降、生成仍塌缩”的信号，优先决定正式实验该先拉长 Stage 1、调整学习率分组，还是重构生成/评估口径。
+- 现在最小 Stage 1 训练闭环、生成评估闭环、结果落盘闭环、正式 Stage 1、warm-start Stage 2 和对照试跑都已经打通；当前最核心的结论是：
+  token-level loss 能有效下降，但生成仍塌缩，下一步重点应转向更有效的阶段切换、评估频率和生成口径，而不是继续只看 CE loss。
