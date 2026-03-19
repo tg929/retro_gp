@@ -65,6 +65,8 @@
 - `model/RETROSYNTHESIS_PLAN.md`: 针对当前 encoder、decoder 和 USPTO-full 风格数据集的单步逆合成实施计划书。
 - `model/retro_model.py`: 当前单步逆合成组合模型，负责组装 frozen encoder、aligner 和带 cross-attention 的 decoder。
 - `model/train_retrosynthesis.py`: 当前最小训练脚本，包含 CSV 数据集读取、collator、两阶段冻结策略、训练循环、loss eval、生成预览和 checkpoint 逻辑。
+- `model/results/`: 训练过程输出目录。
+- `model/results/test/`: 当前默认结果落盘目录，保存训练 loss、eval 指标、生成样本、loss 曲线和运行配置。
 - `model/encoder/`: BERT 风格 encoder 目录。
 - `model/encoder/local_bert.py`: 自定义双向 Transformer encoder，含 embedding、bidirectional self-attention、pooler、MLM head。
 - `model/encoder/encoders.py`: encoder 包装层，负责按 spec 构建本地 BERT 或 HuggingFace encoder。
@@ -84,6 +86,11 @@
 - 当前已确认 encoder 和 decoder 的 `.pt` 权重文件都可以被 `torch.load` 正常读取，并且 decoder 权重与当前 GPT 结构严格匹配。
 - `model/checkpoints_smoke/best.pt`: 一次 Stage 1 一步 smoke train 产生的最小 checkpoint，用来确认训练链路可跑通。
 - `model/checkpoints_smoke_preview/best.pt`: 一次带生成预览的 Stage 1 smoke train 产生的 checkpoint，用来确认生成评估路径可跑通。
+- `model/results/test/train_loss.csv`: 训练 step 级 loss 记录。
+- `model/results/test/eval_metrics.csv`: epoch 级 eval 指标记录。
+- `model/results/test/generation_examples.csv`: 生成预览样本记录，包含 `product / decoder_input / target / pred / match`。
+- `model/results/test/loss_curve.svg`: 当前训练 run 的 loss 曲线图。
+- `model/results/test/run_config.json`: 当前训练 run 的参数快照。
 
 ## Core Search Layer
 

@@ -48,6 +48,7 @@
 - 改 `model/` 下的单步逆合成训练链路：
   先跑 `python model/train_retrosynthesis.py --stage 1 --batch-size 1 --epochs 1 --limit-train 2 --limit-eval 1 --max-train-steps 1 --device cuda`
   再按需要加上 `--generation-eval-samples 1 --preview-samples 1` 验证生成评估路径。
+  训练时默认会把 `train_loss.csv`、`eval_metrics.csv`、`generation_examples.csv`、`loss_curve.svg` 和 `run_config.json` 落到 `model/results/test/`。
 - 学习或检查 `model/`：
   优先做静态导入、tokenizer 行为检查、数据字段拆分检查，再做最小训练 smoke。
 

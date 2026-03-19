@@ -1,5 +1,6 @@
 import argparse
 import csv
+import json
 from pathlib import Path
 
 import torch
@@ -193,7 +194,16 @@ def evaluate_generation(model, dataset, collator, device, sample_count, max_new_
             product = item["product"].replace(" ", "")
             match = pred == target
             matches += int(match)
-            examples.append((product, target, pred, match))
+            examples.append(
+                {
+                    "sample_idx": idx,
+                    "match": int(match),
+                    "decoder_input": model.decoder_tokenizer.bos_token,
+                    "product": product,
+                    "target": target,
+                    "pred": pred,
+                }
+            )
     model.train()
     return matches / max(total, 1), examples
 
@@ -202,11 +212,93 @@ def count_trainable_params(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
+def init_csv(path, fieldnames):
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
+
+def append_csv_row(path, fieldnames, row):
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writerow(row)
+
+
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def build_curve_points(rows, key, min_loss, max_loss, max_step, width, height, pad):
+    plot_width = width - 2 * pad
+    plot_height = height - 2 * pad
+    loss_span = max(max_loss - min_loss, 1e-6)
+    step_span = max(max_step, 1)
+    points = []
+    for row in rows:
+        x = pad + plot_width * (row["global_step"] / step_span)
+        y = height - pad - plot_height * ((row[key] - min_loss) / loss_span)
+        points.append((x, y))
+    return points
+
+
+def format_curve_points(points):
+    return " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
+
+
+def build_point_markers(points, color):
+    return "".join(
+        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{color}"/>' for x, y in points
+    )
+
+
+def save_loss_curve(train_history, eval_history, path):
+    rows = []
+    if train_history:
+        rows.extend(row["train_loss"] for row in train_history)
+    if eval_history:
+        rows.extend(row["eval_loss"] for row in eval_history)
+    if not rows:
+        return
+
+    width = 960
+    height = 540
+    pad = 60
+    min_loss = min(rows)
+    max_loss = max(rows)
+    max_step = max(
+        [row["global_step"] for row in train_history] + [row["global_step"] for row in eval_history] + [1]
+    )
+    train_points = build_curve_points(train_history, "train_loss", min_loss, max_loss, max_step, width, height, pad)
+    eval_points = build_curve_points(eval_history, "eval_loss", min_loss, max_loss, max_step, width, height, pad)
+    train_markers = build_point_markers(train_points, "#1f77b4")
+    eval_markers = build_point_markers(eval_points, "#ff7f0e")
+
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+<rect width="100%" height="100%" fill="white"/>
+<line x1="{pad}" y1="{height - pad}" x2="{width - pad}" y2="{height - pad}" stroke="black" stroke-width="2"/>
+<line x1="{pad}" y1="{pad}" x2="{pad}" y2="{height - pad}" stroke="black" stroke-width="2"/>
+<text x="{width / 2:.1f}" y="{height - 15}" text-anchor="middle" font-size="18">global_step</text>
+<text x="20" y="{height / 2:.1f}" text-anchor="middle" font-size="18" transform="rotate(-90 20,{height / 2:.1f})">loss</text>
+<text x="{pad}" y="{pad - 15}" font-size="16">max={max_loss:.4f}</text>
+<text x="{pad}" y="{height - pad + 25}" font-size="16">min={min_loss:.4f}</text>
+<polyline fill="none" stroke="#1f77b4" stroke-width="3" points="{format_curve_points(train_points)}"/>
+<polyline fill="none" stroke="#ff7f0e" stroke-width="3" points="{format_curve_points(eval_points)}"/>
+{train_markers}
+{eval_markers}
+<text x="{width - 220}" y="{pad}" font-size="16" fill="#1f77b4">train_loss</text>
+<text x="{width - 220}" y="{pad + 24}" font-size="16" fill="#ff7f0e">eval_loss</text>
+</svg>
+"""
+    path.write_text(svg, encoding="utf-8")
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-csv", default="model/data/train.csv")
     parser.add_argument("--eval-csv", default="model/data/eval.csv")
     parser.add_argument("--save-dir", default="model/checkpoints")
+    parser.add_argument("--results-dir", default="model/results/test")
     parser.add_argument("--stage", type=int, choices=[1, 2], default=1)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -250,11 +342,28 @@ def main():
     optimizer = build_optimizer(model, args.lr, args.decoder_lr, args.weight_decay)
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
+    results_dir = Path(args.results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"trainable_params={count_trainable_params(model)}")
+    trainable_params = count_trainable_params(model)
+    print(f"trainable_params={trainable_params}")
+
+    train_loss_path = results_dir / "train_loss.csv"
+    eval_metrics_path = results_dir / "eval_metrics.csv"
+    generation_examples_path = results_dir / "generation_examples.csv"
+    loss_curve_path = results_dir / "loss_curve.svg"
+    init_csv(train_loss_path, ["epoch", "global_step", "train_loss"])
+    init_csv(eval_metrics_path, ["epoch", "global_step", "eval_loss", "generation_exact"])
+    init_csv(
+        generation_examples_path,
+        ["epoch", "sample_idx", "match", "decoder_input", "product", "target", "pred"],
+    )
+    save_json(results_dir / "run_config.json", {**vars(args), "trainable_params": trainable_params})
 
     best_eval = None
     global_step = 0
+    train_history = []
+    eval_history = []
     model.train()
 
     for epoch in range(args.epochs):
@@ -266,12 +375,25 @@ def main():
             optimizer.step()
 
             global_step += 1
+            train_row = {
+                "epoch": epoch,
+                "global_step": global_step,
+                "train_loss": float(loss.item()),
+            }
+            train_history.append(train_row)
+            append_csv_row(train_loss_path, ["epoch", "global_step", "train_loss"], train_row)
             print(f"epoch={epoch} step={global_step} train_loss={loss.item():.6f}")
 
             if args.max_train_steps is not None and global_step >= args.max_train_steps:
                 break
 
         eval_loss = evaluate_loss(model, eval_loader, device, args.max_eval_batches)
+        eval_row = {
+            "epoch": epoch,
+            "global_step": global_step,
+            "eval_loss": float(eval_loss),
+            "generation_exact": "",
+        }
         print(f"epoch={epoch} eval_loss={eval_loss:.6f}")
 
         generation_exact = None
@@ -286,12 +408,28 @@ def main():
                 args.generation_max_new_tokens,
                 args.generation_beam_width,
             )
+            eval_row["generation_exact"] = float(generation_exact)
             print(f"epoch={epoch} generation_exact={generation_exact:.6f}")
-            for product, target, pred, match in preview_examples[:args.preview_samples]:
-                print(f"preview_match={int(match)}")
-                print(f"preview_product={product}")
-                print(f"preview_target={target}")
-                print(f"preview_pred={pred}")
+            for example in preview_examples:
+                example_row = {"epoch": epoch, **example}
+                append_csv_row(
+                    generation_examples_path,
+                    ["epoch", "sample_idx", "match", "decoder_input", "product", "target", "pred"],
+                    example_row,
+                )
+            for example in preview_examples[:args.preview_samples]:
+                print(f"preview_match={example['match']}")
+                print(f"preview_product={example['product']}")
+                print(f"preview_target={example['target']}")
+                print(f"preview_pred={example['pred']}")
+
+        eval_history.append(eval_row)
+        append_csv_row(
+            eval_metrics_path,
+            ["epoch", "global_step", "eval_loss", "generation_exact"],
+            eval_row,
+        )
+        save_loss_curve(train_history, eval_history, loss_curve_path)
 
         if best_eval is None or eval_loss < best_eval:
             best_eval = eval_loss

@@ -108,8 +108,11 @@
   `eval_loss = 2.729984`
   `generation_exact = 0.000000`
   预览生成仍然塌缩为长串重复的 `c`，说明在当前小样本、短步数设置下，提前解冻顶部 4 层 decoder 也没有立刻带来可见的条件化生成改善。
+- 继续增强了 `model/train_retrosynthesis.py` 的结果落盘能力，新增 `--results-dir`，训练时会把 step 级 `train_loss.csv`、epoch 级 `eval_metrics.csv`、生成预览 `generation_examples.csv`、`loss_curve.svg` 和 `run_config.json` 一起写出。
+- 用 `python model/train_retrosynthesis.py --stage 1 --batch-size 1 --epochs 1 --limit-train 2 --limit-eval 1 --max-train-steps 1 --generation-eval-samples 1 --preview-samples 1 --device cuda --results-dir /data1/ytg/retrogp/model/results/test ...`
+  验证了结果目录落盘逻辑，确认上述五个文件都会生成，且 `generation_examples.csv` 已能直接看到 `product / decoder_input / target / pred / match`。
 
 ### 当前判断
 
 - encoder 这边最容易直接污染训练结论的两个问题已经压住了。
-- 现在最小 Stage 1 训练闭环、生成评估闭环、两档 Stage 1 子集试跑和一档 Stage 2 对照试跑都已经打通，下一步重点不再是结构接线，而是基于当前“loss 降、生成仍塌缩”的信号，优先决定正式实验该先拉长 Stage 1、调整学习率分组，还是重构生成/评估口径。
+- 现在最小 Stage 1 训练闭环、生成评估闭环、结果落盘闭环、两档 Stage 1 子集试跑和一档 Stage 2 对照试跑都已经打通，下一步重点不再是结构接线，而是基于当前“loss 降、生成仍塌缩”的信号，优先决定正式实验该先拉长 Stage 1、调整学习率分组，还是重构生成/评估口径。
