@@ -137,6 +137,13 @@
   成功输出 `eval_loss = 6.638617`
   `generation_exact = 0.0`
   并把测试结果写到 `model/results/checkpoint_smoke/`
+- 按最新确定的 full-data 工作流，进一步修改了 `model/train_retrosynthesis.py`：
+  新增 `--disable-eval`，支持训练主进程只做训练、不做训练内验证；
+  `--save-every-steps` 现在会按 `model_step_XXXXXXXX.pt/json` 追加保存 model-only checkpoint，同时继续维护 `latest_model.pt/json`；
+  训练结束固定写出 `final_model.pt/json`。
+- 同步调整了 `model/evaluate_checkpoint.py` 默认评估集合，从 `model/data/test.csv` 改为 `model/data/eval.csv`，更符合“训练中途评估不用测试集”的当前策略。
+- 用 `python -m py_compile model/train_retrosynthesis.py model/evaluate_checkpoint.py`
+  验证了这轮改动的语法正确性；本轮没有启动新的训练。
 
 ### 当前判断
 

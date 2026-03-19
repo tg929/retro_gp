@@ -235,6 +235,21 @@ def save_torch(path, data):
     tmp_path.replace(path)
 
 
+def build_step_checkpoint_paths(save_dir, global_step):
+    stem = f"model_step_{global_step:08d}"
+    return save_dir / f"{stem}.pt", save_dir / f"{stem}.json"
+
+
+def save_model_snapshot(save_dir, global_step, model, meta):
+    step_model_path, step_meta_path = build_step_checkpoint_paths(save_dir, global_step)
+    latest_model_path = save_dir / "latest_model.pt"
+    latest_meta_path = save_dir / "latest_model.json"
+    save_torch(step_model_path, model.state_dict())
+    save_json(step_meta_path, meta)
+    save_torch(latest_model_path, model.state_dict())
+    save_json(latest_meta_path, meta)
+
+
 def build_curve_points(rows, key, min_loss, max_loss, max_step, width, height, pad):
     plot_width = width - 2 * pad
     plot_height = height - 2 * pad
@@ -299,6 +314,7 @@ def parse_args():
     parser.add_argument("--results-dir", default="model/results/test")
     parser.add_argument("--init-checkpoint", default=None)
     parser.add_argument("--save-every-steps", type=int, default=None)
+    parser.add_argument("--disable-eval", action="store_true")
     parser.add_argument("--stage", type=int, choices=[1, 2], default=1)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -330,7 +346,6 @@ def main():
     configure_training_stage(model, args.stage, args.trainable_decoder_blocks)
 
     train_dataset = ReactionDataset(args.train_csv, args.limit_train)
-    eval_dataset = ReactionDataset(args.eval_csv, args.limit_eval)
     collator = RetrosynthesisCollator(
         model.encoder_tokenizer,
         model.decoder_tokenizer,
@@ -339,7 +354,11 @@ def main():
     )
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=collator)
-    eval_loader = DataLoader(eval_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collator)
+    eval_dataset = None
+    eval_loader = None
+    if not args.disable_eval:
+        eval_dataset = ReactionDataset(args.eval_csv, args.limit_eval)
+        eval_loader = DataLoader(eval_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collator)
 
     optimizer = build_optimizer(model, args.lr, args.decoder_lr, args.weight_decay)
     save_dir = Path(args.save_dir)
@@ -351,26 +370,28 @@ def main():
     print(f"trainable_params={trainable_params}")
 
     train_loss_path = results_dir / "train_loss.csv"
+    init_csv(train_loss_path, ["epoch", "global_step", "train_loss"])
     eval_metrics_path = results_dir / "eval_metrics.csv"
     generation_examples_path = results_dir / "generation_examples.csv"
     loss_curve_path = results_dir / "loss_curve.svg"
-    latest_model_path = save_dir / "latest_model.pt"
-    latest_meta_path = save_dir / "latest_model.json"
-    init_csv(train_loss_path, ["epoch", "global_step", "train_loss"])
-    init_csv(eval_metrics_path, ["epoch", "global_step", "eval_loss", "generation_exact"])
-    init_csv(
-        generation_examples_path,
-        ["epoch", "sample_idx", "match", "decoder_input", "product", "target", "pred"],
-    )
+    if not args.disable_eval:
+        init_csv(eval_metrics_path, ["epoch", "global_step", "eval_loss", "generation_exact"])
+        init_csv(
+            generation_examples_path,
+            ["epoch", "sample_idx", "match", "decoder_input", "product", "target", "pred"],
+        )
     save_json(results_dir / "run_config.json", {**vars(args), "trainable_params": trainable_params})
 
     best_eval = None
     global_step = 0
+    last_epoch = -1
+    last_train_loss = None
     train_history = []
     eval_history = []
     model.train()
 
     for epoch in range(args.epochs):
+        last_epoch = epoch
         for batch in train_loader:
             batch = move_batch(batch, device)
             optimizer.zero_grad(set_to_none=True)
@@ -385,13 +406,15 @@ def main():
                 "train_loss": float(loss.item()),
             }
             train_history.append(train_row)
+            last_train_loss = float(loss.item())
             append_csv_row(train_loss_path, ["epoch", "global_step", "train_loss"], train_row)
             print(f"epoch={epoch} step={global_step} train_loss={loss.item():.6f}")
 
             if args.save_every_steps is not None and global_step % args.save_every_steps == 0:
-                save_torch(latest_model_path, model.state_dict())
-                save_json(
-                    latest_meta_path,
+                save_model_snapshot(
+                    save_dir,
+                    global_step,
+                    model,
                     {
                         "epoch": epoch,
                         "global_step": global_step,
@@ -403,79 +426,79 @@ def main():
             if args.max_train_steps is not None and global_step >= args.max_train_steps:
                 break
 
-        eval_loss = evaluate_loss(model, eval_loader, device, args.max_eval_batches)
-        eval_row = {
-            "epoch": epoch,
-            "global_step": global_step,
-            "eval_loss": float(eval_loss),
-            "generation_exact": "",
-        }
-        print(f"epoch={epoch} eval_loss={eval_loss:.6f}")
+        if not args.disable_eval:
+            eval_loss = evaluate_loss(model, eval_loader, device, args.max_eval_batches)
+            eval_row = {
+                "epoch": epoch,
+                "global_step": global_step,
+                "eval_loss": float(eval_loss),
+                "generation_exact": "",
+            }
+            print(f"epoch={epoch} eval_loss={eval_loss:.6f}")
 
-        generation_exact = None
-        preview_examples = []
-        if args.generation_eval_samples > 0:
-            generation_exact, preview_examples = evaluate_generation(
-                model,
-                eval_dataset,
-                collator,
-                device,
-                args.generation_eval_samples,
-                args.generation_max_new_tokens,
-                args.generation_beam_width,
-            )
-            eval_row["generation_exact"] = float(generation_exact)
-            print(f"epoch={epoch} generation_exact={generation_exact:.6f}")
-            for example in preview_examples:
-                example_row = {"epoch": epoch, **example}
-                append_csv_row(
-                    generation_examples_path,
-                    ["epoch", "sample_idx", "match", "decoder_input", "product", "target", "pred"],
-                    example_row,
+            generation_exact = None
+            preview_examples = []
+            if args.generation_eval_samples > 0:
+                generation_exact, preview_examples = evaluate_generation(
+                    model,
+                    eval_dataset,
+                    collator,
+                    device,
+                    args.generation_eval_samples,
+                    args.generation_max_new_tokens,
+                    args.generation_beam_width,
                 )
-            for example in preview_examples[:args.preview_samples]:
-                print(f"preview_match={example['match']}")
-                print(f"preview_product={example['product']}")
-                print(f"preview_target={example['target']}")
-                print(f"preview_pred={example['pred']}")
+                eval_row["generation_exact"] = float(generation_exact)
+                print(f"epoch={epoch} generation_exact={generation_exact:.6f}")
+                for example in preview_examples:
+                    example_row = {"epoch": epoch, **example}
+                    append_csv_row(
+                        generation_examples_path,
+                        ["epoch", "sample_idx", "match", "decoder_input", "product", "target", "pred"],
+                        example_row,
+                    )
+                for example in preview_examples[:args.preview_samples]:
+                    print(f"preview_match={example['match']}")
+                    print(f"preview_product={example['product']}")
+                    print(f"preview_target={example['target']}")
+                    print(f"preview_pred={example['pred']}")
 
-        eval_history.append(eval_row)
-        append_csv_row(
-            eval_metrics_path,
-            ["epoch", "global_step", "eval_loss", "generation_exact"],
-            eval_row,
-        )
-        save_loss_curve(train_history, eval_history, loss_curve_path)
-        if args.save_every_steps is not None and global_step % args.save_every_steps != 0:
-            save_torch(latest_model_path, model.state_dict())
-            save_json(
-                latest_meta_path,
-                {
-                    "epoch": epoch,
-                    "global_step": global_step,
-                    "eval_loss": float(eval_loss),
-                    "generation_exact": generation_exact,
-                    "stage": args.stage,
-                },
+            eval_history.append(eval_row)
+            append_csv_row(
+                eval_metrics_path,
+                ["epoch", "global_step", "eval_loss", "generation_exact"],
+                eval_row,
             )
+            save_loss_curve(train_history, eval_history, loss_curve_path)
 
-        if best_eval is None or eval_loss < best_eval:
-            best_eval = eval_loss
-            torch.save(
-                {
-                    "model": model.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "epoch": epoch,
-                    "global_step": global_step,
-                    "eval_loss": eval_loss,
-                    "generation_exact": generation_exact,
-                    "stage": args.stage,
-                },
-                save_dir / "best.pt",
-            )
+            if best_eval is None or eval_loss < best_eval:
+                best_eval = eval_loss
+                torch.save(
+                    {
+                        "model": model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "epoch": epoch,
+                        "global_step": global_step,
+                        "eval_loss": eval_loss,
+                        "generation_exact": generation_exact,
+                        "stage": args.stage,
+                    },
+                    save_dir / "best.pt",
+                )
 
         if args.max_train_steps is not None and global_step >= args.max_train_steps:
             break
+
+    final_meta = {
+        "epoch": last_epoch,
+        "global_step": global_step,
+        "train_loss": last_train_loss,
+        "stage": args.stage,
+    }
+    save_torch(save_dir / "final_model.pt", model.state_dict())
+    save_json(save_dir / "final_model.json", final_meta)
+    save_torch(save_dir / "latest_model.pt", model.state_dict())
+    save_json(save_dir / "latest_model.json", final_meta)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ from train_retrosynthesis import (
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--csv", default="model/data/test.csv")
+    parser.add_argument("--csv", default="model/data/eval.csv")
     parser.add_argument("--results-dir", default="model/results/checkpoint_test")
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--max-product-len", type=int, default=128)
