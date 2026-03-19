@@ -126,9 +126,20 @@
   `eval_loss = 1.683021`
   `generation_exact = 0.0`
   生成分布相比纯 Stage 1 末尾稍有变化，不再只是单一长串 `c`，但仍然严重塌缩，离可用输出还有明显距离。
+- 继续增强了训练/测试解耦能力：
+  `model/train_retrosynthesis.py` 新增 `--save-every-steps`
+  会周期性覆盖保存 `latest_model.pt` 和 `latest_model.json`
+  供训练过程中并行读取最新权重。
+- 新增 `model/evaluate_checkpoint.py`，可独立加载任意保存下来的 checkpoint，对指定 CSV 跑 eval loss 和生成预览，不依赖训练进程继续运行。
+- 用一组最小 smoke 验证了这条链路：
+  先用 `--save-every-steps 1` 跑了 1 step 训练，成功生成 `checkpoints_periodic_smoke/latest_model.pt`
+  再用 `python model/evaluate_checkpoint.py --checkpoint ... --csv model/data/eval.csv --limit 1 ...`
+  成功输出 `eval_loss = 6.638617`
+  `generation_exact = 0.0`
+  并把测试结果写到 `model/results/checkpoint_smoke/`
 
 ### 当前判断
 
 - encoder 这边最容易直接污染训练结论的两个问题已经压住了。
-- 现在最小 Stage 1 训练闭环、生成评估闭环、结果落盘闭环、正式 Stage 1、warm-start Stage 2 和对照试跑都已经打通；当前最核心的结论是：
+- 现在最小 Stage 1 训练闭环、生成评估闭环、结果落盘闭环、正式 Stage 1、warm-start Stage 2、周期保存和独立 checkpoint 测试都已经打通；当前最核心的结论是：
   token-level loss 能有效下降，但生成仍塌缩，下一步重点应转向更有效的阶段切换、评估频率和生成口径，而不是继续只看 CE loss。

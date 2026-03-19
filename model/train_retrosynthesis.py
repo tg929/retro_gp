@@ -229,6 +229,12 @@ def save_json(path, data):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
+def save_torch(path, data):
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    torch.save(data, tmp_path)
+    tmp_path.replace(path)
+
+
 def build_curve_points(rows, key, min_loss, max_loss, max_step, width, height, pad):
     plot_width = width - 2 * pad
     plot_height = height - 2 * pad
@@ -292,6 +298,7 @@ def parse_args():
     parser.add_argument("--save-dir", default="model/checkpoints")
     parser.add_argument("--results-dir", default="model/results/test")
     parser.add_argument("--init-checkpoint", default=None)
+    parser.add_argument("--save-every-steps", type=int, default=None)
     parser.add_argument("--stage", type=int, choices=[1, 2], default=1)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -347,6 +354,8 @@ def main():
     eval_metrics_path = results_dir / "eval_metrics.csv"
     generation_examples_path = results_dir / "generation_examples.csv"
     loss_curve_path = results_dir / "loss_curve.svg"
+    latest_model_path = save_dir / "latest_model.pt"
+    latest_meta_path = save_dir / "latest_model.json"
     init_csv(train_loss_path, ["epoch", "global_step", "train_loss"])
     init_csv(eval_metrics_path, ["epoch", "global_step", "eval_loss", "generation_exact"])
     init_csv(
@@ -378,6 +387,18 @@ def main():
             train_history.append(train_row)
             append_csv_row(train_loss_path, ["epoch", "global_step", "train_loss"], train_row)
             print(f"epoch={epoch} step={global_step} train_loss={loss.item():.6f}")
+
+            if args.save_every_steps is not None and global_step % args.save_every_steps == 0:
+                save_torch(latest_model_path, model.state_dict())
+                save_json(
+                    latest_meta_path,
+                    {
+                        "epoch": epoch,
+                        "global_step": global_step,
+                        "train_loss": float(loss.item()),
+                        "stage": args.stage,
+                    },
+                )
 
             if args.max_train_steps is not None and global_step >= args.max_train_steps:
                 break
@@ -425,6 +446,18 @@ def main():
             eval_row,
         )
         save_loss_curve(train_history, eval_history, loss_curve_path)
+        if args.save_every_steps is not None and global_step % args.save_every_steps != 0:
+            save_torch(latest_model_path, model.state_dict())
+            save_json(
+                latest_meta_path,
+                {
+                    "epoch": epoch,
+                    "global_step": global_step,
+                    "eval_loss": float(eval_loss),
+                    "generation_exact": generation_exact,
+                    "stage": args.stage,
+                },
+            )
 
         if best_eval is None or eval_loss < best_eval:
             best_eval = eval_loss

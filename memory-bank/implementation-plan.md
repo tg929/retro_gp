@@ -50,6 +50,7 @@
   再按需要加上 `--generation-eval-samples 1 --preview-samples 1` 验证生成评估路径。
   训练时默认会把 `train_loss.csv`、`eval_metrics.csv`、`generation_examples.csv`、`loss_curve.svg` 和 `run_config.json` 落到 `model/results/test/`。
   如果要在 Stage 1 结果上继续做 Stage 2，当前脚本已支持 `--init-checkpoint` 做模型权重 warm-start。
+  如果要边训练边测试，训练脚本可加 `--save-every-steps N`，把最新权重持续写到 `save_dir/latest_model.pt`，再用 `python model/evaluate_checkpoint.py --checkpoint ...` 单独测试。
 - 学习或检查 `model/`：
   优先做静态导入、tokenizer 行为检查、数据字段拆分检查，再做最小训练 smoke。
 
