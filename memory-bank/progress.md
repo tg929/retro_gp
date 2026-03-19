@@ -151,6 +151,10 @@
   训练集 DataLoader 改为按 `seed + epoch` 的确定性打乱，resume 时会按保存下来的 `epoch_step` 跳过当前 epoch 已处理的 batch，尽量恢复到被 kill 前的位置。
 - 用 `python -m py_compile model/train_retrosynthesis.py model/evaluate_checkpoint.py`
   再次验证了 resume 相关改动的语法正确性；本轮仍未启动新的训练。
+- 针对被系统 `Killed` 的旧 full-data Stage 1 运行，又整理出了一套可汇报材料，输出到 `model/results/test-full_report/`：
+  包含 `train_loss_curve.svg`、`checkpoint_train_loss.svg`、`checkpoint_summary.csv`、`summary.json` 和 `report.md`。
+  这套材料基于现有的 `model/results/test-full/train_loss.csv`、`model/checkpoints_stage1_full/model_step_*.json` 和 `model/results/test-full_checkpoints/latest_fast/` 汇总生成；
+  关键结论是：训练 loss 在 129157 个已记录 step 内持续下降，但最后成功保存的 checkpoint 仍停在 108000 step；最新 fast eval 的 `eval_loss = 1.6517`、`generation_exact = 0.0`，生成结果仍明显塌缩。
 
 ### 当前判断
 
