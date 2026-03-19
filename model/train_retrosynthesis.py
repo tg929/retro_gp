@@ -238,18 +238,8 @@ def build_curve_points(rows, key, min_loss, max_loss, max_step, width, height, p
     for row in rows:
         x = pad + plot_width * (row["global_step"] / step_span)
         y = height - pad - plot_height * ((row[key] - min_loss) / loss_span)
-        points.append((x, y))
-    return points
-
-
-def format_curve_points(points):
-    return " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
-
-
-def build_point_markers(points, color):
-    return "".join(
-        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{color}"/>' for x, y in points
-    )
+        points.append(f"{x:.1f},{y:.1f}")
+    return " ".join(points)
 
 
 def save_loss_curve(train_history, eval_history, path):
@@ -271,8 +261,6 @@ def save_loss_curve(train_history, eval_history, path):
     )
     train_points = build_curve_points(train_history, "train_loss", min_loss, max_loss, max_step, width, height, pad)
     eval_points = build_curve_points(eval_history, "eval_loss", min_loss, max_loss, max_step, width, height, pad)
-    train_markers = build_point_markers(train_points, "#1f77b4")
-    eval_markers = build_point_markers(eval_points, "#ff7f0e")
 
     svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
 <rect width="100%" height="100%" fill="white"/>
@@ -282,10 +270,8 @@ def save_loss_curve(train_history, eval_history, path):
 <text x="20" y="{height / 2:.1f}" text-anchor="middle" font-size="18" transform="rotate(-90 20,{height / 2:.1f})">loss</text>
 <text x="{pad}" y="{pad - 15}" font-size="16">max={max_loss:.4f}</text>
 <text x="{pad}" y="{height - pad + 25}" font-size="16">min={min_loss:.4f}</text>
-<polyline fill="none" stroke="#1f77b4" stroke-width="3" points="{format_curve_points(train_points)}"/>
-<polyline fill="none" stroke="#ff7f0e" stroke-width="3" points="{format_curve_points(eval_points)}"/>
-{train_markers}
-{eval_markers}
+<polyline fill="none" stroke="#1f77b4" stroke-width="3" points="{train_points}"/>
+<polyline fill="none" stroke="#ff7f0e" stroke-width="3" points="{eval_points}"/>
 <text x="{width - 220}" y="{pad}" font-size="16" fill="#1f77b4">train_loss</text>
 <text x="{width - 220}" y="{pad + 24}" font-size="16" fill="#ff7f0e">eval_loss</text>
 </svg>
