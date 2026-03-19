@@ -70,7 +70,8 @@
 - `model/encoder/MolEncoder-SMILES-Drug-1.2B/encoder.yaml`: encoder 结构配置，目前是 `24 x 32 x 2048`。
 - `model/encoder/MolEncoder-SMILES-Drug-1.2B/checkpoint.pt`: encoder 预训练权重。
 - `model/encoder/MolEncoder-SMILES-Drug-1.2B/vocab.txt`: encoder 词表。
-- 当前源码里 `LocalBertEncoder` 构造 `SmilesTokenizer` 时没有显式传 `do_lower_case=False`，会把 `C/O` 等 token 降成小写，破坏化学语义。
+- 当前源码里 `LocalBertEncoder` 已显式使用 `do_lower_case=False`，encoder tokenizer 会保留 `C/O/N` 等化学 token 的大小写语义。
+- 当前 `local_bert.py` 里的 bidirectional self-attention 已实际使用传入的 `attention_mask`，batch + padding 前向不会再把 pad 位当成有效上下文。
 - `model/decoder/`: GPT 风格 decoder 目录。
 - `model/decoder/model.py`: 自回归 GPT 模型，使用 causal attention 和 RoPE，当前没有 cross-attention。
 - `model/decoder/tokenizer.py`: decoder 专用 SMILES tokenizer，明确重写了 regex 分词逻辑。

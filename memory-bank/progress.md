@@ -51,3 +51,23 @@
 - 还没有把分散的历史说明整合成一个统一顶层 `README.md`。
 - 还没有补专门的自动化测试目录；目前主要依赖 demo 和 `scripts/scoring_smoke_test.py`。
 - 这次只做了记忆与文档配置，没有修改任何业务逻辑代码，也没有运行耗时实验。
+
+## 2026-03-19
+
+### 本次动作
+
+- 完成了单步逆合成训练 `Stage 0` 的两个硬修复：
+  `model/encoder/encoders.py` 现在显式使用 `do_lower_case=False`
+  `model/encoder/local_bert.py` 现在会把传入的 `attention_mask` 真正送进 self-attention
+- 保持了 encoder 代码改动最小，只修训练前必须修的两处行为问题，没有提前引入训练脚本或额外抽象层。
+- 同步更新了 `memory-bank/architecture.md`，把 `model/encoder` 相关状态改成当前真实实现。
+
+### 验证
+
+- 用真实 encoder checkpoint 和 `model/data/train.csv` 第一条 product 验证 tokenizer 输出，确认 `C/O/N` 等大写 token 被保留，没有再被 lower-case。
+- 用同一条 product 做“单独前向”和“带 padding 前向”的对比，非 pad 位置输出最大差为 `3.052e-05`，说明 padding mask 已经生效。
+
+### 当前判断
+
+- encoder 这边最容易直接污染训练结论的两个问题已经压住了。
+- 接下来可以进入 decoder cross-attention 和最小训练链路的实现，不必再在 encoder 输入语义和 pad 污染上反复排错。
