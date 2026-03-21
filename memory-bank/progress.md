@@ -155,6 +155,12 @@
   包含 `train_loss_curve.svg`、`checkpoint_train_loss.svg`、`checkpoint_summary.csv`、`summary.json` 和 `report.md`。
   这套材料基于现有的 `model/results/test-full/train_loss.csv`、`model/checkpoints_stage1_full/model_step_*.json` 和 `model/results/test-full_checkpoints/latest_fast/` 汇总生成；
   关键结论是：训练 loss 在 129157 个已记录 step 内持续下降，但最后成功保存的 checkpoint 仍停在 108000 step；最新 fast eval 的 `eval_loss = 1.6517`、`generation_exact = 0.0`，生成结果仍明显塌缩。
+- 为了先做最小推理修正，调整了 `model/decoder/model.py` 的停止条件：
+  普通 retrosynthesis 生成和 beam search 不再把 `SEP` 作为停止 token，只在生成到 `EOS` 时停止；
+  `linker` 分支保持原有 `SEP` 终止逻辑不变。
+  这样训练目标里的 `reactants + [EOS]` 与推理阶段的停止条件更一致，先尽量减轻“经常打满长度上限”的问题。
+- 用 `python -m py_compile model/decoder/model.py model/retro_model.py model/train_retrosynthesis.py model/evaluate_checkpoint.py`
+  验证了这次停止条件调整没有引入语法错误；本轮没有启动新训练或新评估。
 
 ### 当前判断
 
