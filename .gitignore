@@ -3,6 +3,8 @@
 !memory-bank/
 !memory-bank/*.md
 *.pyc
+.DS_Store
+__pycache__/
 scscore-master/*
 scscore/*
 synga-FE64/*
@@ -19,4 +21,16 @@ ASKCOS/*
 logs/*
 model/*
 !model/
-!model/**/*.py
+!model/**/
+!model/**
+model/data/**
+model/results/**
+model/**/*.pt
+model/**/*.pth
+model/**/*.ckpt
+model/**/*.safetensors
+model/checkpoints*/*.json
+model/checkpoints*/**/*.json
+model/**/.DS_Store
+model/**/__pycache__/
+model/**/*.pyc

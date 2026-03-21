@@ -161,6 +161,11 @@
   这样训练目标里的 `reactants + [EOS]` 与推理阶段的停止条件更一致，先尽量减轻“经常打满长度上限”的问题。
 - 用 `python -m py_compile model/decoder/model.py model/retro_model.py model/train_retrosynthesis.py model/evaluate_checkpoint.py`
   验证了这次停止条件调整没有引入语法错误；本轮没有启动新训练或新评估。
+- 调整了仓库根目录 `.gitignore` 对 `model/` 的规则：
+  现在 `model/` 下默认放开提交，只继续忽略 `model/data/**` 和各类权重文件（如 `model/**/*.pt` / `.pth` / `.ckpt` / `.safetensors`）；
+  后续又进一步收紧为：
+  `model/results/**` 不进入 Git，checkpoint 目录下的 `.json` 元信息不进入 Git；
+  同时补充忽略 `model/**/.DS_Store`、`model/**/__pycache__/` 和 `model/**/*.pyc`，避免运行噪音文件进入 Git。
 
 ### 当前判断
 
