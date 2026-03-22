@@ -69,6 +69,7 @@ class RetrosynthesisModel(nn.Module):
         self.decoder_tokenizer = build_decoder_tokenizer(decoder_vocab_path)
         self.aligner = Aligner(self.encoder.dim)
         self.sequence_projector = SequenceProjector(self.encoder.dim)
+        self.token_projector = SequenceProjector(self.encoder.dim)
         self.alignment_layers = 4
 
         decoder_config = GPTConfig(
@@ -116,8 +117,40 @@ class RetrosynthesisModel(nn.Module):
         return masked_mean_pool(hidden_states, mask)
 
     def pool_decoder_states(self, hidden_states, targets):
-        mask = targets.ne(self.decoder_tokenizer.pad_token_id)
+        mask = targets.ne(self.decoder_tokenizer.pad_token_id) & targets.ne(self.decoder_tokenizer.eos_token_id)
         return masked_mean_pool(hidden_states, mask)
+
+    def build_teacher_token_mask(self, teacher_input_ids, teacher_attention_mask):
+        cls_id = self.encoder_tokenizer.cls_token_id
+        sep_id = self.encoder_tokenizer.sep_token_id
+        pad_id = self.encoder_tokenizer.pad_token_id
+        return (
+            teacher_attention_mask.bool()
+            & teacher_input_ids.ne(cls_id)
+            & teacher_input_ids.ne(sep_id)
+            & teacher_input_ids.ne(pad_id)
+        )
+
+    def build_decoder_token_mask(self, targets):
+        return targets.ne(self.decoder_tokenizer.pad_token_id) & targets.ne(self.decoder_tokenizer.eos_token_id)
+
+    def pool_teacher_token_groups(self, teacher_hidden, teacher_token_mask, teacher_group_lengths):
+        grouped_states = []
+        for sample_hidden, sample_mask, sample_lengths in zip(teacher_hidden, teacher_token_mask, teacher_group_lengths):
+            valid_hidden = sample_hidden[sample_mask]
+            valid_lengths = sample_lengths[sample_lengths > 0]
+            if int(valid_lengths.sum().item()) != valid_hidden.size(0):
+                raise ValueError(
+                    f"teacher subtoken counts do not match grouped lengths: "
+                    f"{valid_hidden.size(0)} vs {int(valid_lengths.sum().item())}"
+                )
+            offset = 0
+            pooled = []
+            for length in valid_lengths.tolist():
+                pooled.append(valid_hidden[offset:offset + length].mean(dim=0))
+                offset += length
+            grouped_states.append(torch.stack(pooled, dim=0))
+        return grouped_states
 
     def forward(self, product_input_ids, product_attention_mask, reactant_input_ids, targets=None):
         memory = self.encode_product(product_input_ids, product_attention_mask)
@@ -137,7 +170,9 @@ class RetrosynthesisModel(nn.Module):
         targets,
         teacher_input_ids,
         teacher_attention_mask,
-        align_weight=0.2,
+        teacher_group_lengths,
+        seq_align_weight=0.1,
+        tok_align_weight=0.2,
         eos_weight=3.0,
     ):
         memory = self.encode_product(product_input_ids, product_attention_mask)
@@ -159,14 +194,32 @@ class RetrosynthesisModel(nn.Module):
         decoder_hidden = torch.stack(decoder_layers, dim=0).mean(dim=0)
         decoder_pooled = self.pool_decoder_states(decoder_hidden, targets)
         projected_decoder = self.sequence_projector(decoder_pooled)
-        align_loss = 1.0 - F.cosine_similarity(projected_decoder, teacher_pooled.detach(), dim=-1).mean()
-        total_loss = ce_loss + align_weight * align_loss
+        seq_align_loss = 1.0 - F.cosine_similarity(projected_decoder, teacher_pooled.detach(), dim=-1).mean()
+
+        teacher_token_mask = self.build_teacher_token_mask(teacher_input_ids, teacher_attention_mask)
+        decoder_token_mask = self.build_decoder_token_mask(targets)
+        teacher_token_groups = self.pool_teacher_token_groups(teacher_hidden, teacher_token_mask, teacher_group_lengths)
+        decoder_token_groups = [sample_hidden[sample_mask] for sample_hidden, sample_mask in zip(decoder_hidden, decoder_token_mask)]
+        teacher_tokens = torch.cat(teacher_token_groups, dim=0)
+        decoder_tokens = torch.cat(decoder_token_groups, dim=0)
+        if teacher_tokens.size(0) != decoder_tokens.size(0):
+            raise ValueError(
+                f"teacher/decoder grouped token counts do not match: "
+                f"{teacher_tokens.size(0)} vs {decoder_tokens.size(0)}"
+            )
+        projected_tokens = self.token_projector(decoder_tokens)
+        tok_align_loss = 1.0 - F.cosine_similarity(projected_tokens, teacher_tokens.detach(), dim=-1).mean()
+
+        align_loss = seq_align_weight * seq_align_loss + tok_align_weight * tok_align_loss
+        total_loss = ce_loss + align_loss
 
         return {
             "logits": logits,
             "loss": total_loss,
             "ce_loss": ce_loss,
             "align_loss": align_loss,
+            "seq_align_loss": seq_align_loss,
+            "tok_align_loss": tok_align_loss,
             "attn_maps": attn_maps,
         }
 

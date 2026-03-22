@@ -52,6 +52,9 @@
   如果要跑新的 REPA 风格主线，使用
   `python model/train_retrosynthesis_repa.py ...`
   而不是继续复用旧的 staged Stage 1 / Stage 2 训练逻辑。
+  当前 REPA 主线已经不再只做 pooled sequence-level 对齐；如果继续沿这条主线推进，优先保留
+  `CE + seq_align + tok_align`
+  的训练形式，而不是回退到仅靠 pooled sequence-level loss。
   先跑 `python model/train_retrosynthesis.py --stage 1 --batch-size 1 --epochs 1 --limit-train 2 --limit-eval 1 --max-train-steps 1 --device cuda`
   再按需要加上 `--generation-eval-samples 1 --preview-samples 1` 验证生成评估路径。
   训练时默认会把 `train_loss.csv`、`eval_metrics.csv`、`generation_examples.csv`、`loss_curve.svg` 和 `run_config.json` 落到 `model/results/test/`。

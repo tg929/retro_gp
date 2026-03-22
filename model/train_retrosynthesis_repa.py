@@ -62,6 +62,7 @@ class RepaCollator:
     def __call__(self, batch):
         product_ids = []
         teacher_ids = []
+        teacher_group_lengths = []
         reactant_inputs = []
         reactant_targets = []
 
@@ -74,17 +75,19 @@ class RepaCollator:
                     max_length=self.max_product_len,
                 )
             )
+            max_reactant_tokens = min(self.max_reactants_len - 1, self.max_teacher_len - 2)
+            reactant_tokens = item["teacher_text"].split()[:max_reactant_tokens]
+            teacher_group_lengths.append([len(self.encoder_tokenizer.tokenize(token)) for token in reactant_tokens])
             teacher_ids.append(
                 self.encoder_tokenizer.encode(
-                    item["teacher_text"],
+                    " ".join(reactant_tokens),
                     add_special_tokens=True,
                     truncation=True,
                     max_length=self.max_teacher_len,
                 )
             )
 
-            reactant_ids = self.decoder_tokenizer.encode(item["reactants"], add_special_tokens=False)
-            reactant_ids = reactant_ids[: self.max_reactants_len - 1]
+            reactant_ids = [self.decoder_tokenizer.convert_tokens_to_ids(token) for token in reactant_tokens]
             reactant_inputs.append([self.decoder_tokenizer.bos_token_id] + reactant_ids)
             reactant_targets.append(reactant_ids + [self.decoder_tokenizer.eos_token_id])
 
@@ -95,6 +98,10 @@ class RepaCollator:
         teacher_input_ids, teacher_attention_mask = pad_batch(
             teacher_ids,
             self.encoder_tokenizer.pad_token_id,
+        )
+        teacher_group_lengths, _ = pad_batch(
+            teacher_group_lengths,
+            0,
         )
         reactant_input_ids, _ = pad_batch(
             reactant_inputs,
@@ -110,6 +117,7 @@ class RepaCollator:
             "product_attention_mask": product_attention_mask,
             "teacher_input_ids": teacher_input_ids,
             "teacher_attention_mask": teacher_attention_mask,
+            "teacher_group_lengths": teacher_group_lengths,
             "reactant_input_ids": reactant_input_ids,
             "targets": targets,
         }
@@ -171,11 +179,13 @@ def count_trainable_params(model):
     return sum(param.numel() for param in model.parameters() if param.requires_grad)
 
 
-def evaluate_repa_loss(model, dataloader, device, align_weight, eos_weight, max_batches=None):
+def evaluate_repa_loss(model, dataloader, device, seq_align_weight, tok_align_weight, eos_weight, max_batches=None):
     model.eval()
     total_loss = 0.0
     total_ce = 0.0
     total_align = 0.0
+    total_seq_align = 0.0
+    total_tok_align = 0.0
     total_batches = 0
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
@@ -184,12 +194,15 @@ def evaluate_repa_loss(model, dataloader, device, align_weight, eos_weight, max_
             batch = move_batch(batch, device)
             outputs = model.forward_repa(
                 **batch,
-                align_weight=align_weight,
+                seq_align_weight=seq_align_weight,
+                tok_align_weight=tok_align_weight,
                 eos_weight=eos_weight,
             )
             total_loss += outputs["loss"].item()
             total_ce += outputs["ce_loss"].item()
             total_align += outputs["align_loss"].item()
+            total_seq_align += outputs["seq_align_loss"].item()
+            total_tok_align += outputs["tok_align_loss"].item()
             total_batches += 1
     model.train()
     denom = max(total_batches, 1)
@@ -197,6 +210,8 @@ def evaluate_repa_loss(model, dataloader, device, align_weight, eos_weight, max_
         "eval_loss": total_loss / denom,
         "eval_ce_loss": total_ce / denom,
         "eval_align_loss": total_align / denom,
+        "eval_seq_align_loss": total_seq_align / denom,
+        "eval_tok_align_loss": total_tok_align / denom,
     }
 
 
@@ -250,7 +265,8 @@ def parse_args():
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--warmup-ratio", type=float, default=0.05)
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--align-weight", type=float, default=0.2)
+    parser.add_argument("--seq-align-weight", type=float, default=0.1)
+    parser.add_argument("--tok-align-weight", type=float, default=0.2)
     parser.add_argument("--eos-weight", type=float, default=3.0)
     parser.add_argument("--top-decoder-blocks", type=int, default=4)
     parser.add_argument("--max-product-len", type=int, default=128)
@@ -328,9 +344,23 @@ def main():
     eval_metrics_path = results_dir / "eval_metrics.csv"
     loss_curve_path = results_dir / "loss_curve.svg"
     if args.resume_from is None or not train_loss_path.exists():
-        init_csv(train_loss_path, ["epoch", "global_step", "train_loss", "ce_loss", "align_loss"])
+        init_csv(
+            train_loss_path,
+            ["epoch", "global_step", "train_loss", "ce_loss", "align_loss", "seq_align_loss", "tok_align_loss"],
+        )
     if args.eval_csv is not None and (args.resume_from is None or not eval_metrics_path.exists()):
-        init_csv(eval_metrics_path, ["epoch", "global_step", "eval_loss", "eval_ce_loss", "eval_align_loss"])
+        init_csv(
+            eval_metrics_path,
+            [
+                "epoch",
+                "global_step",
+                "eval_loss",
+                "eval_ce_loss",
+                "eval_align_loss",
+                "eval_seq_align_loss",
+                "eval_tok_align_loss",
+            ],
+        )
 
     save_json(results_dir / "run_config.json", {**vars(args), "trainable_params": trainable_params})
 
@@ -361,6 +391,8 @@ def main():
         accum_train = 0.0
         accum_ce = 0.0
         accum_align = 0.0
+        accum_seq_align = 0.0
+        accum_tok_align = 0.0
         accum_count = 0
 
         for batch_idx, batch in enumerate(train_loader):
@@ -370,13 +402,16 @@ def main():
             batch = move_batch(batch, device)
             outputs = model.forward_repa(
                 **batch,
-                align_weight=args.align_weight,
+                seq_align_weight=args.seq_align_weight,
+                tok_align_weight=args.tok_align_weight,
                 eos_weight=args.eos_weight,
             )
             (outputs["loss"] / args.grad_accumulation).backward()
             accum_train += outputs["loss"].item()
             accum_ce += outputs["ce_loss"].item()
             accum_align += outputs["align_loss"].item()
+            accum_seq_align += outputs["seq_align_loss"].item()
+            accum_tok_align += outputs["tok_align_loss"].item()
             accum_count += 1
 
             should_step = accum_count == args.grad_accumulation or batch_idx == len(train_loader) - 1
@@ -395,19 +430,23 @@ def main():
                 "train_loss": accum_train / accum_count,
                 "ce_loss": accum_ce / accum_count,
                 "align_loss": accum_align / accum_count,
+                "seq_align_loss": accum_seq_align / accum_count,
+                "tok_align_loss": accum_tok_align / accum_count,
             }
             train_history.append(train_row)
             last_train_loss = float(train_row["train_loss"])
             append_csv_row(
                 train_loss_path,
-                ["epoch", "global_step", "train_loss", "ce_loss", "align_loss"],
+                ["epoch", "global_step", "train_loss", "ce_loss", "align_loss", "seq_align_loss", "tok_align_loss"],
                 train_row,
             )
             print(
                 f"epoch={epoch} step={global_step} "
                 f"train_loss={train_row['train_loss']:.6f} "
                 f"ce_loss={train_row['ce_loss']:.6f} "
-                f"align_loss={train_row['align_loss']:.6f}"
+                f"align_loss={train_row['align_loss']:.6f} "
+                f"seq_align_loss={train_row['seq_align_loss']:.6f} "
+                f"tok_align_loss={train_row['tok_align_loss']:.6f}"
             )
 
             if args.save_every_steps is not None and global_step % args.save_every_steps == 0:
@@ -441,6 +480,8 @@ def main():
             accum_train = 0.0
             accum_ce = 0.0
             accum_align = 0.0
+            accum_seq_align = 0.0
+            accum_tok_align = 0.0
             accum_count = 0
 
             if args.max_train_steps is not None and global_step >= args.max_train_steps:
@@ -455,7 +496,8 @@ def main():
                     model,
                     eval_loader,
                     device,
-                    align_weight=args.align_weight,
+                    seq_align_weight=args.seq_align_weight,
+                    tok_align_weight=args.tok_align_weight,
                     eos_weight=args.eos_weight,
                     max_batches=args.max_eval_batches,
                 )
@@ -463,14 +505,24 @@ def main():
             eval_history.append(eval_row)
             append_csv_row(
                 eval_metrics_path,
-                ["epoch", "global_step", "eval_loss", "eval_ce_loss", "eval_align_loss"],
+                [
+                    "epoch",
+                    "global_step",
+                    "eval_loss",
+                    "eval_ce_loss",
+                    "eval_align_loss",
+                    "eval_seq_align_loss",
+                    "eval_tok_align_loss",
+                ],
                 eval_row,
             )
             save_loss_curve(train_history, eval_history, loss_curve_path)
             print(
                 f"epoch={epoch} eval_loss={eval_row['eval_loss']:.6f} "
                 f"eval_ce_loss={eval_row['eval_ce_loss']:.6f} "
-                f"eval_align_loss={eval_row['eval_align_loss']:.6f}"
+                f"eval_align_loss={eval_row['eval_align_loss']:.6f} "
+                f"eval_seq_align_loss={eval_row['eval_seq_align_loss']:.6f} "
+                f"eval_tok_align_loss={eval_row['eval_tok_align_loss']:.6f}"
             )
 
         if args.max_train_steps is not None and global_step >= args.max_train_steps:

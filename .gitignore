@@ -36,3 +36,4 @@ model/**/__pycache__/
 model/**/*.pyc
 REPA-main/*
 qformer-main/*
+model/data_repa_v1/*

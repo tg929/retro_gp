@@ -237,3 +237,31 @@
 - 用
   `conda run -n retrogp python model/evaluate_repa_checkpoint.py --checkpoint model/results/repa_smoke_ckpt/final_model.pt --csv model/results/preprocess_smoke/eval.csv --results-dir model/results/repa_eval_smoke --batch-size 2 --max-eval-batches 1 --generation-eval-samples 2 --preview-samples 1 --device cuda`
   跑通了新的最小评估闭环，确认新 evaluator 能读取 processed CSV，计算 `eval_loss / eval_ce_loss / eval_align_loss`，并写出生成样本。
+- 继续把 REPA 主线从“只有 pooled sequence-level 对齐”推进到“sequence-level + token-level 对齐”：
+  `model/retro_model.py` 新增 `token_projector` 并把 `forward_repa()` 改成同时输出
+  `seq_align_loss / tok_align_loss`；
+  `model/train_retrosynthesis_repa.py` 和 `model/evaluate_repa_checkpoint.py` 改成显式接收
+  `--seq-align-weight`、`--tok-align-weight`，
+  并把 `train_loss.csv / eval_metrics.csv` 的日志字段扩展为
+  `train_loss / ce_loss / align_loss / seq_align_loss / tok_align_loss`
+  与
+  `eval_loss / eval_ce_loss / eval_align_loss / eval_seq_align_loss / eval_tok_align_loss`。
+- 在实现 token-level 对齐时发现，teacher encoder 的 tokenizer 会把部分 bracket token 再切成多个子 token，例如 `[O-]` 会被切成 `"[UNK]", "O", "-", "[UNK]"`；
+  因此不能简单要求 teacher token 数和 decoder token 数一一相等。
+  当前修法是在 collator 里先基于 canonicalized regex token 序列构造 `teacher_group_lengths`，
+  再在 `forward_repa()` 里把 teacher hidden 按“每个 SMILES token 对应多少个 encoder 子 token”做分组 mean pooling，
+  最后再和 decoder token hidden 对齐。
+- 用新的 token-bridge 版本重新跑通了 smoke 训练：
+  `conda run -n retrogp python model/train_retrosynthesis_repa.py --train-csv model/results/preprocess_smoke/train.csv --eval-csv model/results/preprocess_smoke/eval.csv --save-dir model/results/repa_tok_smoke_ckpt --results-dir model/results/repa_tok_smoke --init-checkpoint model/checkpoints_stage2_full-1/model_step_00036000.pt --epochs 1 --batch-size 2 --grad-accumulation 1 --seq-align-weight 0.1 --tok-align-weight 0.2 --top-decoder-blocks 4 --max-train-steps 1 --max-eval-batches 1 --device cuda`
+  输出：
+  `train_loss = 1.578019`
+  `ce_loss = 1.281135`
+  `align_loss = 0.296884`
+  `seq_align_loss = 0.986955`
+  `tok_align_loss = 0.990942`
+  `eval_loss = 1.823502`
+  `eval_ce_loss = 1.563218`
+  `eval_align_loss = 0.260284`
+  `eval_seq_align_loss = 0.664397`
+  `eval_tok_align_loss = 0.969220`
+  说明新的 token-level 桥已经完整接通，且不会再因 `[O-]` 这类 bracket token 导致 teacher/decoder token 数不匹配。

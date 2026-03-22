@@ -18,7 +18,8 @@ def parse_args():
     parser.add_argument("--max-product-len", type=int, default=128)
     parser.add_argument("--max-reactants-len", type=int, default=128)
     parser.add_argument("--max-teacher-len", type=int, default=128)
-    parser.add_argument("--align-weight", type=float, default=0.2)
+    parser.add_argument("--seq-align-weight", type=float, default=0.1)
+    parser.add_argument("--tok-align-weight", type=float, default=0.2)
     parser.add_argument("--eos-weight", type=float, default=3.0)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--max-eval-batches", type=int, default=None)
@@ -53,7 +54,8 @@ def main():
         model,
         dataloader,
         device,
-        align_weight=args.align_weight,
+        seq_align_weight=args.seq_align_weight,
+        tok_align_weight=args.tok_align_weight,
         eos_weight=args.eos_weight,
         max_batches=args.max_eval_batches,
     )
@@ -90,7 +92,9 @@ def main():
     print(
         f"eval_loss={metrics['eval_loss']:.6f} "
         f"eval_ce_loss={metrics['eval_ce_loss']:.6f} "
-        f"eval_align_loss={metrics['eval_align_loss']:.6f}"
+        f"eval_align_loss={metrics['eval_align_loss']:.6f} "
+        f"eval_seq_align_loss={metrics['eval_seq_align_loss']:.6f} "
+        f"eval_tok_align_loss={metrics['eval_tok_align_loss']:.6f}"
     )
     print(f"generation_exact={generation_exact:.6f}")
     for example in examples[:args.preview_samples]:
