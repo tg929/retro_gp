@@ -237,18 +237,22 @@ class GPT(nn.Module):
         return optimizer
 
     def forward(self, idx, tokenizer, targets=None, kv_cache=False, current_idx=None,
-                encoder_hidden_states=None, encoder_attention_mask=None):
+                encoder_hidden_states=None, encoder_attention_mask=None,
+                loss_weights=None, return_hidden_states=False):
         b, t = idx.size()
 
         # forward the GPT model
         token_embeddings = self.tok_emb(idx)  # each index maps to a (learnable) vector
         x = self.drop(token_embeddings)  # [batch_size , token_length, embedding]
         attn_maps = []
+        hidden_states = []
         encoder_attention_mask = prepare_attention_mask(encoder_attention_mask)
 
         for layer in self.blocks:
             x, attn = layer(x, encoder_hidden_states, encoder_attention_mask, kv_cache, current_idx)
             attn_maps.append(attn)
+            if return_hidden_states:
+                hidden_states.append(x)
 
         x = self.ln_f(x)
         logits = self.head(x)
@@ -256,8 +260,23 @@ class GPT(nn.Module):
         # if we are given some desired targets also calculate the loss
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.view(-1), ignore_index=tokenizer.pad_token_id)
+            flat_targets = targets.view(-1)
+            token_loss = F.cross_entropy(
+                logits.reshape(-1, logits.size(-1)),
+                flat_targets,
+                ignore_index=tokenizer.pad_token_id,
+                reduction="none",
+            )
+            valid = flat_targets != tokenizer.pad_token_id
+            if loss_weights is not None:
+                flat_weights = loss_weights.view(-1).to(token_loss.dtype)
+                norm = flat_weights[valid].sum().clamp_min(1.0)
+                loss = (token_loss[valid] * flat_weights[valid]).sum() / norm
+            else:
+                loss = token_loss[valid].mean()
 
+        if return_hidden_states:
+            return logits, loss, attn_maps, hidden_states
         return logits, loss, attn_maps  # (num_layers, batch_size, num_heads, max_seq_len, max_seq_len)
 
     @torch.inference_mode()

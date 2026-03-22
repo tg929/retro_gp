@@ -49,6 +49,9 @@
   如果要切到新的 canonicalized / sorted 数据口径，先跑
   `python model/preprocess_retrosynthesis_data.py --output-dir ...`
   生成新的 train/eval/test CSV，再接后续训练脚本。
+  如果要跑新的 REPA 风格主线，使用
+  `python model/train_retrosynthesis_repa.py ...`
+  而不是继续复用旧的 staged Stage 1 / Stage 2 训练逻辑。
   先跑 `python model/train_retrosynthesis.py --stage 1 --batch-size 1 --epochs 1 --limit-train 2 --limit-eval 1 --max-train-steps 1 --device cuda`
   再按需要加上 `--generation-eval-samples 1 --preview-samples 1` 验证生成评估路径。
   训练时默认会把 `train_loss.csv`、`eval_metrics.csv`、`generation_examples.csv`、`loss_curve.svg` 和 `run_config.json` 落到 `model/results/test/`。

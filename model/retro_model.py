@@ -3,6 +3,7 @@ import sys
 
 import torch
 import torch.nn as nn
+from torch.nn import functional as F
 
 
 ROOT = Path(__file__).resolve().parent
@@ -45,6 +46,18 @@ class Aligner(nn.Module):
         return x + self.fc2(self.act(self.fc1(self.ln(x))))
 
 
+class SequenceProjector(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.ln = nn.LayerNorm(dim)
+        self.fc1 = nn.Linear(dim, dim)
+        self.fc2 = nn.Linear(dim, dim)
+        self.act = nn.GELU()
+
+    def forward(self, x):
+        return self.fc2(self.act(self.fc1(self.ln(x))))
+
+
 class RetrosynthesisModel(nn.Module):
     def __init__(self,
                  encoder_path=DEFAULT_ENCODER_PATH,
@@ -55,6 +68,8 @@ class RetrosynthesisModel(nn.Module):
         self.encoder_tokenizer = self.encoder.tokenizer
         self.decoder_tokenizer = build_decoder_tokenizer(decoder_vocab_path)
         self.aligner = Aligner(self.encoder.dim)
+        self.sequence_projector = SequenceProjector(self.encoder.dim)
+        self.alignment_layers = 4
 
         decoder_config = GPTConfig(
             vocab_size=self.decoder_tokenizer.vocab_size,
@@ -82,6 +97,28 @@ class RetrosynthesisModel(nn.Module):
             hidden = self.encoder(product_input_ids, product_attention_mask)
         return self.aligner(hidden)
 
+    def encode_teacher_reactants(self, teacher_input_ids, teacher_attention_mask):
+        with torch.no_grad():
+            return self.encoder(teacher_input_ids, teacher_attention_mask)
+
+    def build_token_loss_weights(self, targets, eos_weight):
+        weights = torch.ones_like(targets, dtype=torch.float)
+        weights[targets == self.decoder_tokenizer.eos_token_id] = eos_weight
+        weights[targets == self.decoder_tokenizer.pad_token_id] = 0.0
+        return weights
+
+    def pool_encoder_states(self, hidden_states, input_ids, attention_mask):
+        mask = attention_mask.bool()
+        cls_id = self.encoder_tokenizer.cls_token_id
+        sep_id = self.encoder_tokenizer.sep_token_id
+        pad_id = self.encoder_tokenizer.pad_token_id
+        mask = mask & input_ids.ne(cls_id) & input_ids.ne(sep_id) & input_ids.ne(pad_id)
+        return masked_mean_pool(hidden_states, mask)
+
+    def pool_decoder_states(self, hidden_states, targets):
+        mask = targets.ne(self.decoder_tokenizer.pad_token_id)
+        return masked_mean_pool(hidden_states, mask)
+
     def forward(self, product_input_ids, product_attention_mask, reactant_input_ids, targets=None):
         memory = self.encode_product(product_input_ids, product_attention_mask)
         return self.decoder(
@@ -91,6 +128,47 @@ class RetrosynthesisModel(nn.Module):
             encoder_hidden_states=memory,
             encoder_attention_mask=product_attention_mask,
         )
+
+    def forward_repa(
+        self,
+        product_input_ids,
+        product_attention_mask,
+        reactant_input_ids,
+        targets,
+        teacher_input_ids,
+        teacher_attention_mask,
+        align_weight=0.2,
+        eos_weight=3.0,
+    ):
+        memory = self.encode_product(product_input_ids, product_attention_mask)
+        loss_weights = self.build_token_loss_weights(targets, eos_weight)
+        logits, ce_loss, attn_maps, hidden_states = self.decoder(
+            reactant_input_ids,
+            self.decoder_tokenizer,
+            targets=targets,
+            encoder_hidden_states=memory,
+            encoder_attention_mask=product_attention_mask,
+            loss_weights=loss_weights,
+            return_hidden_states=True,
+        )
+
+        teacher_hidden = self.encode_teacher_reactants(teacher_input_ids, teacher_attention_mask)
+        teacher_pooled = self.pool_encoder_states(teacher_hidden, teacher_input_ids, teacher_attention_mask)
+
+        decoder_layers = hidden_states[-self.alignment_layers:]
+        decoder_hidden = torch.stack(decoder_layers, dim=0).mean(dim=0)
+        decoder_pooled = self.pool_decoder_states(decoder_hidden, targets)
+        projected_decoder = self.sequence_projector(decoder_pooled)
+        align_loss = 1.0 - F.cosine_similarity(projected_decoder, teacher_pooled.detach(), dim=-1).mean()
+        total_loss = ce_loss + align_weight * align_loss
+
+        return {
+            "logits": logits,
+            "loss": total_loss,
+            "ce_loss": ce_loss,
+            "align_loss": align_loss,
+            "attn_maps": attn_maps,
+        }
 
     @torch.inference_mode()
     def generate(self, product_input_ids, product_attention_mask, decoder_input_ids=None,
@@ -131,3 +209,9 @@ class RetrosynthesisModel(nn.Module):
                 encoder_attention_mask=product_attention_mask,
             )
         )
+
+
+def masked_mean_pool(hidden_states, mask):
+    weights = mask.to(hidden_states.dtype).unsqueeze(-1)
+    denom = weights.sum(dim=1).clamp_min(1.0)
+    return (hidden_states * weights).sum(dim=1) / denom

@@ -214,3 +214,26 @@
 
 - 新的数据预处理脚本已经把“canonicalized precursor-set + 统一 tokenization”这一步单独落地，后续可以在不改原始 `model/data/*.csv` 的前提下，生成新的训练数据版本供 REPA 风格方案使用。
 - 这一步暂时只解决了数据表示问题，还没有改新的联合损失训练主线；下一步应继续改 `retro_model.py`、`decoder/model.py`、`train_retrosynthesis.py` 和 `evaluate_checkpoint.py`，把 reactant teacher encoder 和 sequence-level alignment loss 接进去。
+
+### 后续动作
+
+- 已继续把模型和训练侧接到 REPA 风格主线：
+  `model/retro_model.py` 新增 `SequenceProjector`、`encode_teacher_reactants()`、mask-aware pooling 和 `forward_repa()`；
+  `model/decoder/model.py` 新增可选加权 CE 和 hidden state 返回；
+  新增 `model/train_retrosynthesis_repa.py` 和 `model/evaluate_repa_checkpoint.py` 两个独立入口，不再污染旧的 staged baseline 脚本。
+- 用
+  `python -m py_compile model/retro_model.py model/decoder/model.py model/train_retrosynthesis_repa.py model/evaluate_repa_checkpoint.py`
+  做了静态验证。
+- 用 processed smoke 数据跑通了新的最小训练闭环：
+  `conda run -n retrogp python model/train_retrosynthesis_repa.py --train-csv model/results/preprocess_smoke/train.csv --eval-csv model/results/preprocess_smoke/eval.csv --save-dir model/results/repa_smoke_ckpt --results-dir model/results/repa_smoke --init-checkpoint model/checkpoints_stage2_full-1/model_step_00036000.pt --epochs 1 --batch-size 2 --grad-accumulation 1 --max-train-steps 1 --max-eval-batches 1 --top-decoder-blocks 4 --device cuda`
+  输出：
+  `trainable_params = 892139520`
+  `train_loss = 1.497133`
+  `ce_loss = 1.300497`
+  `align_loss = 0.983179`
+  `eval_loss = 1.649441`
+  `eval_ce_loss = 1.512445`
+  `eval_align_loss = 0.684981`
+- 用
+  `conda run -n retrogp python model/evaluate_repa_checkpoint.py --checkpoint model/results/repa_smoke_ckpt/final_model.pt --csv model/results/preprocess_smoke/eval.csv --results-dir model/results/repa_eval_smoke --batch-size 2 --max-eval-batches 1 --generation-eval-samples 2 --preview-samples 1 --device cuda`
+  跑通了新的最小评估闭环，确认新 evaluator 能读取 processed CSV，计算 `eval_loss / eval_ce_loss / eval_align_loss`，并写出生成样本。
