@@ -176,6 +176,13 @@
   生成长度仍明显塌缩，32 条样本的平均预测长度约 `106.28`，其中大量样本仍以长串 `C` 开头并接近长度上限。
 - 在做这次评估前，再次发现并清理了会占 GPU 显存的异常 `/tmp/.cache/python` 进程及恢复的 `/var/tmp/.crond/upd` crontab 持久化；
   清理后 GPU 上只剩正常的小型系统进程，再进行评估。
+- `checkpoints_stage2_full-1` 的 Stage 2 probe 也已跑完：
+  `final_model.json` 记录 `global_step = 50000`、`stage = 2`。
+- 用与 Stage 1 相同的 `eval.csv + max_eval_batches=128 + generation_eval_samples=32` 配置，对 3 个候选 checkpoint 做了对齐评估：
+  1. `Stage 1 final`：`eval_loss = 1.578143`，`generation_exact = 0.0`，平均预测长度约 `106.28`
+  2. `Stage 2 step 36000`：`eval_loss = 1.530634`，`generation_exact = 0.0`，平均预测长度约 `99.44`
+  3. `Stage 2 final`：`eval_loss = 1.544691`，`generation_exact = 0.0`，平均预测长度约 `103.81`
+  当前按验证集 loss 和长度分布看，`Stage 2 step 36000` 是三者里最好的候选，但生成仍明显塌缩，没有出现 exact match。
 
 ### 当前判断
 

@@ -34,3 +34,4 @@ model/checkpoints*/**/*.json
 model/**/.DS_Store
 model/**/__pycache__/
 model/**/*.pyc
+REPA-main/*
