@@ -166,6 +166,16 @@
   后续又进一步收紧为：
   `model/results/**` 不进入 Git，checkpoint 目录下的 `.json` 元信息不进入 Git；
   同时补充忽略 `model/**/.DS_Store`、`model/**/__pycache__/` 和 `model/**/*.pyc`，避免运行噪音文件进入 Git。
+- `checkpoints_stage1_full-1` 这一轮 full-data Stage 1 已完整跑完 1 个 epoch：
+  `final_model.json` / `final_resume.json` 里记录的 `global_step = 405238`。
+- 对这轮完整 Stage 1 的最终权重做了独立评估，结果写到 `model/results/test-full-1_checkpoints/final_eval32/`：
+  使用 `eval.csv`、`max_eval_batches = 128`、`generation_eval_samples = 32`。
+  结果为：
+  `eval_loss = 1.578143`
+  `generation_exact = 0.0`
+  生成长度仍明显塌缩，32 条样本的平均预测长度约 `106.28`，其中大量样本仍以长串 `C` 开头并接近长度上限。
+- 在做这次评估前，再次发现并清理了会占 GPU 显存的异常 `/tmp/.cache/python` 进程及恢复的 `/var/tmp/.crond/upd` crontab 持久化；
+  清理后 GPU 上只剩正常的小型系统进程，再进行评估。
 
 ### 当前判断
 
