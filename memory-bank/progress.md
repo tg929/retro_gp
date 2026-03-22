@@ -265,3 +265,17 @@
   `eval_seq_align_loss = 0.664397`
   `eval_tok_align_loss = 0.969220`
   说明新的 token-level 桥已经完整接通，且不会再因 `[O-]` 这类 bracket token 导致 teacher/decoder token 数不匹配。
+- 在正式 `repa_probe` 命令上又遇到了一类更长序列的失败样本：
+  早期实现虽然按 `max_reactants_len - 1` 限制了 decoder token 数，但还没有同时保证 teacher encoder 的 subtoken 总数不超过 `max_teacher_len - 2`。
+  这会在 `teacher_group_lengths` 累加值超过 teacher 实际保留 subtoken 数时触发：
+  `ValueError: teacher subtoken counts do not match grouped lengths`
+- 已在 `model/train_retrosynthesis_repa.py` 的 `RepaCollator` 中把 reactant token 选择改成“双预算截断”：
+  同时满足
+  `decoder token count <= max_reactants_len - 1`
+  和
+  `teacher subtoken count <= max_teacher_len - 2`。
+  这样即使某些 bracket token 会展开成多个 encoder subtokens，也不会再在长样本上超出 teacher 预算。
+- 用一个轻量 tokenizer-only 检查脚本对 `model/data_repa_v1/train.csv` 前 `2000` 条样本做了扫描：
+  在新的双预算截断规则下，所有样本都满足
+  `sum(teacher_group_lengths) == actual_teacher_subtoken_count`。
+  这说明这次正式训练里暴露出来的长样本截断 bug 已经被压住。

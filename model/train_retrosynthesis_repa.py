@@ -59,6 +59,27 @@ class RepaCollator:
         self.max_reactants_len = max_reactants_len
         self.max_teacher_len = max_teacher_len
 
+    def select_reactant_tokens(self, teacher_text):
+        max_decoder_tokens = self.max_reactants_len - 1
+        max_teacher_subtokens = self.max_teacher_len - 2
+        selected_tokens = []
+        group_lengths = []
+        used_subtokens = 0
+
+        for token in teacher_text.split():
+            piece_count = len(self.encoder_tokenizer.tokenize(token))
+            if piece_count == 0:
+                continue
+            if len(selected_tokens) >= max_decoder_tokens:
+                break
+            if used_subtokens + piece_count > max_teacher_subtokens:
+                break
+            selected_tokens.append(token)
+            group_lengths.append(piece_count)
+            used_subtokens += piece_count
+
+        return selected_tokens, group_lengths
+
     def __call__(self, batch):
         product_ids = []
         teacher_ids = []
@@ -75,9 +96,8 @@ class RepaCollator:
                     max_length=self.max_product_len,
                 )
             )
-            max_reactant_tokens = min(self.max_reactants_len - 1, self.max_teacher_len - 2)
-            reactant_tokens = item["teacher_text"].split()[:max_reactant_tokens]
-            teacher_group_lengths.append([len(self.encoder_tokenizer.tokenize(token)) for token in reactant_tokens])
+            reactant_tokens, group_lengths = self.select_reactant_tokens(item["teacher_text"])
+            teacher_group_lengths.append(group_lengths)
             teacher_ids.append(
                 self.encoder_tokenizer.encode(
                     " ".join(reactant_tokens),
