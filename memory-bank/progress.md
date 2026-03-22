@@ -189,3 +189,28 @@
 - encoder 这边最容易直接污染训练结论的两个问题已经压住了。
 - 现在最小 Stage 1 训练闭环、生成评估闭环、结果落盘闭环、正式 Stage 1、warm-start Stage 2、周期保存和独立 checkpoint 测试都已经打通；当前最核心的结论是：
   token-level loss 能有效下降，但生成仍塌缩，下一步重点应转向更有效的阶段切换、评估频率和生成口径，而不是继续只看 CE loss。
+
+## 2026-03-22
+
+### 本次动作
+
+- 为新的 REPA 风格单步逆合成主线新增了数据预处理入口：`model/preprocess_retrosynthesis_data.py`。
+- 新脚本读取 `model/data/{train,eval,test}.csv`，对 `product` 和 precursor components 做 RDKit canonicalization，对 precursor components 做确定性排序，并用统一 regex tokenizer 重新生成 token 序列。
+- 输出 CSV 同时保留兼容现有训练脚本的 `reactants>reagents>production` 字段，以及后续新训练方案需要的 `product_raw / product_canonical / product_tokens / precursor_raw / precursor_canonical_sorted / precursor_components_canonical / precursor_tokens` 字段。
+- 把这个新入口同步记录到了 `memory-bank/architecture.md` 和 `memory-bank/implementation-plan.md`。
+
+### 验证
+
+- 用 `python -m py_compile model/preprocess_retrosynthesis_data.py` 做了静态语法检查。
+- 用
+  `conda run -n retrogp python model/preprocess_retrosynthesis_data.py --output-dir model/results/preprocess_smoke --limit 8`
+  对 train/eval/test 各 8 条样本做了 smoke 验证。
+- smoke 结果里三个 split 都是：
+  `kept_rows = 8`
+  `dropped_rows = 0`
+  说明在这批样本上 canonicalization、component 排序和输出字段构造都跑通了。
+
+### 当前判断
+
+- 新的数据预处理脚本已经把“canonicalized precursor-set + 统一 tokenization”这一步单独落地，后续可以在不改原始 `model/data/*.csv` 的前提下，生成新的训练数据版本供 REPA 风格方案使用。
+- 这一步暂时只解决了数据表示问题，还没有改新的联合损失训练主线；下一步应继续改 `retro_model.py`、`decoder/model.py`、`train_retrosynthesis.py` 和 `evaluate_checkpoint.py`，把 reactant teacher encoder 和 sequence-level alignment loss 接进去。

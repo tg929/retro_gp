@@ -46,6 +46,9 @@
   先跑 `python scripts/inspect_nag2g_one_step.py ...`
   再跑单目标 `run_real_data_gp.py`
 - 改 `model/` 下的单步逆合成训练链路：
+  如果要切到新的 canonicalized / sorted 数据口径，先跑
+  `python model/preprocess_retrosynthesis_data.py --output-dir ...`
+  生成新的 train/eval/test CSV，再接后续训练脚本。
   先跑 `python model/train_retrosynthesis.py --stage 1 --batch-size 1 --epochs 1 --limit-train 2 --limit-eval 1 --max-train-steps 1 --device cuda`
   再按需要加上 `--generation-eval-samples 1 --preview-samples 1` 验证生成评估路径。
   训练时默认会把 `train_loss.csv`、`eval_metrics.csv`、`generation_examples.csv`、`loss_curve.svg` 和 `run_config.json` 落到 `model/results/test/`。

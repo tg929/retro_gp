@@ -66,6 +66,7 @@
 - `model/retro_model.py`: 当前单步逆合成组合模型，负责组装 frozen encoder、aligner 和带 cross-attention 的 decoder。
 - `model/train_retrosynthesis.py`: 当前训练脚本，包含 CSV 数据集读取、collator、两阶段冻结策略、`--init-checkpoint` warm-start、`--resume-from` 断点续训、`--disable-eval` 纯训练模式，以及 `--save-every-steps` 的追加式 `model_step_XXXXXXXX.pt` 保存、`--resume-every-steps` 的 `resume_step_XXXXXXXX.pt` 保存、`latest_*` 更新和 `final_*` 写出逻辑。
 - `model/evaluate_checkpoint.py`: 独立 checkpoint 测试脚本，默认使用 `model/data/eval.csv`，可直接加载训练过程中保存的模型权重，对指定 CSV 跑 eval loss 和生成预览。
+- `model/preprocess_retrosynthesis_data.py`: 新的数据预处理脚本，用 RDKit 对 `product` 和 precursor components 做 canonicalization，对 precursor components 做确定性排序，并重新生成统一 tokenization 的 CSV；输出同时保留兼容当前训练脚本的 `reactants>reagents>production` 字段，以及 `product_raw/product_canonical/product_tokens/precursor_raw/precursor_canonical_sorted/precursor_components_canonical/precursor_tokens` 等新方案训练字段。
 - `model/results/`: 训练过程输出目录。
 - `model/results/test/`: 当前默认结果落盘目录，保存训练 loss、eval 指标、生成样本、loss 曲线和运行配置。
 - `model/encoder/`: BERT 风格 encoder 目录。
