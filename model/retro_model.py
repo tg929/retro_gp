@@ -226,7 +226,7 @@ class RetrosynthesisModel(nn.Module):
     @torch.inference_mode()
     def generate(self, product_input_ids, product_attention_mask, decoder_input_ids=None,
                  max_new_tokens=128, temperature=0.0, top_k=None, beam_width=1,
-                 return_all_beams=False):
+                 return_all_beams=False, length_penalty=0.0):
         memory = self.encode_product(product_input_ids, product_attention_mask)
         if decoder_input_ids is None:
             decoder_input_ids = torch.full(
@@ -249,6 +249,7 @@ class RetrosynthesisModel(nn.Module):
                     encoder_hidden_states=memory,
                     encoder_attention_mask=product_attention_mask,
                     return_all=return_all_beams,
+                    length_penalty=length_penalty,
                 )
             )
 

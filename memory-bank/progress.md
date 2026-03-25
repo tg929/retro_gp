@@ -694,3 +694,84 @@
   top-k。
 - 在修完解码偏置后，再判断是否需要继续动训练：
   例如减弱 decoder 语言模型先验、强化 cross-attn 可训练范围、或提高与条件控制直接相关的训练信号。
+
+## 2026-03-26 Beam Length Penalty Removal Probe
+
+### 本次动作
+
+- 将 beam search 里硬编码的
+  `-0.2 * generated_length`
+  重排项改成显式参数，默认值设为
+  `0.0`，
+  覆盖：
+  [model.py](/data1/ytg/retrogp/model/decoder/model.py#L382)
+  [retro_model.py](/data1/ytg/retrogp/model/retro_model.py#L226)
+  [train_retrosynthesis.py](/data1/ytg/retrogp/model/train_retrosynthesis.py#L249)
+  [evaluate_checkpoint.py](/data1/ytg/retrogp/model/evaluate_checkpoint.py#L21)
+  [evaluate_repa_checkpoint.py](/data1/ytg/retrogp/model/evaluate_repa_checkpoint.py#L19)
+- 两个评估脚本和训练时的 generation preview 都新增了
+  `--generation-length-penalty`
+  参数，后续可以直接在命令行对比不同 beam 重排策略。
+- 用
+  `checkpoints_repa_probe-2/final_model.pt`
+  做了新的 quick probe：
+  [repa_eval_0326_01](/data1/ytg/retrogp/model/results/repa_eval_0326_01)
+  配置为
+  `beam_width = 10`
+  `generation_length_penalty = 0.0`
+  `generation_eval_samples = 16`
+  `device = cuda`
+  `amp_dtype = bf16`。
+
+### 如何验证
+
+- 静态编译通过：
+  `python -m py_compile model/decoder/model.py model/retro_model.py model/train_retrosynthesis.py model/evaluate_checkpoint.py model/evaluate_repa_checkpoint.py`
+- 新 probe 已生成：
+  [metrics.json](/data1/ytg/retrogp/model/results/repa_eval_0326_01/metrics.json)
+  [generation_examples.csv](/data1/ytg/retrogp/model/results/repa_eval_0326_01/generation_examples.csv)
+
+### 关键发现
+
+- 显式的
+  `-0.2 * length`
+  移除后，top-1 结果没有被明显改写。
+  在前
+  `16`
+  条同批次样本上，
+  旧的
+  [repa_eval_0325_05/generation_examples.csv](/data1/ytg/retrogp/model/results/repa_eval_0325_05/generation_examples.csv)
+  和新的
+  [repa_eval_0326_01/generation_examples.csv](/data1/ytg/retrogp/model/results/repa_eval_0326_01/generation_examples.csv)
+  top-1 预测完全一致：
+  `pred_changed = 0`
+  `topk_changed = 0`。
+- 这说明之前判断需要修正：
+  硬编码长度惩罚确实是放大器，但不是主因；
+  更深层的短序列偏置来自 beam search 本身使用“累计 logprob 求和”来排 beam，
+  这在没有 length normalization 的情况下天然偏好更短序列。
+- 现有 quick probe 指标是：
+  `generation_exact = 0.0625`
+  `generation_topk_exact = 0.0625`
+  `generation_invalid_top1_rate = 0.0`
+  但 top-1 仍然高度塌到
+  `CC`，
+  说明“只去掉显式长度惩罚”不足以解决当前 decode bias。
+
+### 当前判断
+
+- 现在可以更准确地说：
+  `CC`
+  塌缩的 decode 侧原因不是单独来自那条
+  `-0.2 * length`
+  规则，而是：
+  1. beam top-1 使用未归一化累计 logprob，自带短序列偏置
+  2. 模型本身前缀先验过强，`C -> C` 已经是 beam 内最稳定的高分起点
+  3. 原来的显式长度惩罚只是进一步加重了这个问题
+
+### 待办
+
+- 下一步如果继续从解码侧修，不应该只停在“把显式长度惩罚设成 0”，而应该改成标准的长度归一化 beam score。
+- 如果 length-normalized beam 之后仍然严重塌到
+  `CC`，
+  那就可以更有把握地把主要矛头转回训练侧的条件控制能力，而不是继续纠缠 decode heuristic。

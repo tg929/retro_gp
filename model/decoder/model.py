@@ -379,10 +379,10 @@ class GPT(nn.Module):
 
         return x, mask
 
-    def _finalize_beam_candidates(self, candidates, input_length, beam_width, linker=False):
+    def _finalize_beam_candidates(self, candidates, input_length, beam_width, linker=False, length_penalty=0.0):
         reranked = []
         for score, seq, ended in candidates:
-            adjusted_score = score - (seq.shape[1] - input_length) * 0.2
+            adjusted_score = score - (seq.shape[1] - input_length) * length_penalty
             if linker:
                 star_num = int((seq == 256).sum().item())
                 if star_num != 4:
@@ -395,7 +395,7 @@ class GPT(nn.Module):
                              temperature=0.0, top_k=None,  rp=1.0, stream=True,
                              kv_cache=True, is_simulation=False, linker=False,
                              encoder_hidden_states=None, encoder_attention_mask=None,
-                             return_all=False):
+                             return_all=False, length_penalty=0.0):
         if idx.size(0) != 1:
             raise ValueError("beam_search_generate currently supports batch_size=1")
 
@@ -464,7 +464,13 @@ class GPT(nn.Module):
             if all(ended for _, _, ended in beam):
                 break
 
-        beam = self._finalize_beam_candidates(candidates, input_length, beam_width, linker=linker)
+        beam = self._finalize_beam_candidates(
+            candidates,
+            input_length,
+            beam_width,
+            linker=linker,
+            length_penalty=length_penalty,
+        )
         if return_all:
             yield [candidate[1][:, input_length:] for candidate in beam]
         else:

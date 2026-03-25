@@ -33,6 +33,7 @@ def parse_args():
     parser.add_argument("--generation-eval-samples", type=int, default=16)
     parser.add_argument("--generation-max-new-tokens", type=int, default=128)
     parser.add_argument("--generation-beam-width", type=int, default=1)
+    parser.add_argument("--generation-length-penalty", type=float, default=0.0)
     parser.add_argument("--preview-samples", type=int, default=8)
     parser.add_argument("--amp-dtype", choices=["fp32", "fp16", "bf16"], default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -76,6 +77,7 @@ def main():
         args.generation_eval_samples,
         args.generation_max_new_tokens,
         args.generation_beam_width,
+        args.generation_length_penalty,
     )
     metrics.update(generation_metrics)
 
