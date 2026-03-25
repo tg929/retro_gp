@@ -81,6 +81,37 @@
 - 如果是“复用旧 checkpoint 做新评估”，不要改旧权重目录；只给新的 `model/results/` 输出目录加新的日期序号。
 - 需要追溯“某个结果目录对应哪个 checkpoint”时，以结果目录里的 `run_config.json` 和 `metrics.json` 为准，不靠目录名硬编码来源。
 
+## Generation Evaluation Standard
+
+- `model/train_retrosynthesis.py` 里的生成评估现在默认采用
+  canonicalized precursor-set 匹配，而不是直接拿 raw decoded string 做唯一标准。
+- 当前各指标含义约定为：
+  `generation_exact` = canonical top-1 exact match
+  `generation_topk_exact` = canonical top-k exact match（`k = generation_beam_width`）
+  `generation_raw_exact` = raw string exact match
+  `generation_invalid_top1_rate` = top-1 预测无法 canonicalize 的比例
+- `generation_examples.csv` 现在会同时保存：
+  raw `pred`
+  `pred_canonical`
+  `target_canonical`
+  以及全部 beam 候选的 `beam_preds` / `beam_preds_canonical`
+  便于后续检查“写法不同”和“真正化学错误”的区别。
+- 如果要跑标准 top-k 评估，需要显式提高
+  `--generation-beam-width`
+  但在 `10w+` 规模 split 上，beam search 成本会明显上升；默认仍建议把
+  `generation_eval_samples`
+  和
+  `max_eval_batches`
+  控制在可接受范围内，再决定是否做更大规模的正式评估。
+- `model/evaluate_checkpoint.py`
+  和
+  `model/evaluate_repa_checkpoint.py`
+  的 loss 评估现在默认会在 CUDA 上自动选择
+  `bf16` / `fp16` autocast
+  来压低显存；
+  如果要回到全精度，可显式传
+  `--amp-dtype fp32`。
+
 ## Documentation Rules
 
 - 新增或替换入口脚本后，更新 `memory-bank/architecture.md`。

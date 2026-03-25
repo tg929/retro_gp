@@ -11,6 +11,8 @@ from retro_model import RetrosynthesisModel
 from train_retrosynthesis import (
     append_csv_row,
     build_train_loader,
+    default_eval_amp_dtype,
+    get_eval_autocast_context,
     init_csv,
     load_init_checkpoint,
     move_batch,
@@ -199,7 +201,8 @@ def count_trainable_params(model):
     return sum(param.numel() for param in model.parameters() if param.requires_grad)
 
 
-def evaluate_repa_loss(model, dataloader, device, seq_align_weight, tok_align_weight, eos_weight, max_batches=None):
+def evaluate_repa_loss(model, dataloader, device, seq_align_weight, tok_align_weight, eos_weight, max_batches=None,
+                       amp_dtype=None):
     model.eval()
     total_loss = 0.0
     total_ce = 0.0
@@ -207,17 +210,19 @@ def evaluate_repa_loss(model, dataloader, device, seq_align_weight, tok_align_we
     total_seq_align = 0.0
     total_tok_align = 0.0
     total_batches = 0
+    amp_dtype = default_eval_amp_dtype(device) if amp_dtype is None else amp_dtype
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
             if max_batches is not None and batch_idx >= max_batches:
                 break
             batch = move_batch(batch, device)
-            outputs = model.forward_repa(
-                **batch,
-                seq_align_weight=seq_align_weight,
-                tok_align_weight=tok_align_weight,
-                eos_weight=eos_weight,
-            )
+            with get_eval_autocast_context(device, amp_dtype):
+                outputs = model.forward_repa(
+                    **batch,
+                    seq_align_weight=seq_align_weight,
+                    tok_align_weight=tok_align_weight,
+                    eos_weight=eos_weight,
+                )
             total_loss += outputs["loss"].item()
             total_ce += outputs["ce_loss"].item()
             total_align += outputs["align_loss"].item()

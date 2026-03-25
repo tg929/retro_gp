@@ -392,3 +392,162 @@
 - 如果后续要写正式实验汇报，建议再对选中的 checkpoint 跑一次 full eval / full test，或者至少增大 `max_eval_batches` 与 `generation_eval_samples` 做更稳的对照。
 - 当前 `0325_03 / 0325_04` 已经把 loss 完整跑满了 eval/test split；
   但生成 exact 仍然只是 `128` 条样本抽样，不是对全部 `10w+` 条样本做逐条生成。
+
+## 2026-03-25 Canonical Generation Evaluation Refactor
+
+### 改了什么
+
+- 新增
+  `model/smiles_eval.py`
+  用 RDKit 对单个分子和 precursor set 做 canonicalization，并在评估时屏蔽无效 SMILES 的 parse log 噪声。
+- 调整
+  `model/decoder/model.py`
+  的 beam search：
+  现在支持返回全部 beam 候选；
+  同时在 beam 模式下禁用共享 KV cache，避免多分支共用 cache 造成 top-k 候选不可靠。
+- 调整
+  `model/retro_model.py`
+  的 `generate(...)`
+  接口，支持 `return_all_beams=True`，把 top-k 候选继续上传给评估逻辑。
+- 重写
+  `model/train_retrosynthesis.py`
+  中的 `evaluate_generation(...)`：
+  不再只算 raw string exact；
+  现在同时输出
+  `generation_exact`
+  `generation_topk_exact`
+  `generation_raw_exact`
+  `generation_invalid_top1_rate`
+  并把 canonical target / canonical pred / 全部 beam 候选写进 `generation_examples.csv`。
+- 更新
+  `model/evaluate_checkpoint.py`
+  和
+  `model/evaluate_repa_checkpoint.py`
+  以保存新的 generation 指标和更完整的样本明细。
+
+### 为什么改
+
+- 之前仓库里的 `generation_exact` 是 raw decoded string 的 top-1 全串相等，这会把“化学等价但写法不同”的预测直接判错。
+- 之前 `beam_width > 1` 的实现没有可靠地把全部 beam 候选交给评估端，也不适合作为正式 top-k 指标来源。
+- 这次改动把训练期/评估期的表示口径至少统一到了“canonical precursor set”这一层，便于后续再补
+  round-trip
+  或更正式的 benchmark 汇报。
+
+### 如何验证
+
+- 静态编译通过：
+  `python -m py_compile model/smiles_eval.py model/train_retrosynthesis.py model/evaluate_checkpoint.py model/evaluate_repa_checkpoint.py model/retro_model.py model/decoder/model.py`
+- 最小运行 smoke：
+  在
+  `model/checkpoints_repa_probe-2/final_model.pt`
+  上，用
+  `beam_width = 3`
+  对
+  `model/data_repa_v1/eval.csv`
+  的前 `2` 条样本调用新的 `evaluate_generation(...)`；
+  成功返回了新的 generation 指标字典和 canonicalized 预测字段，没有再打印 RDKit parse error。
+
+### 风险与待办
+
+- 目前只完成了 canonical top-k exact 这一层，还没有把
+  round-trip accuracy
+  接进来。
+- `10w+` 样本规模下的 beam search 评估成本很高；这次没有额外落新的正式 `0325_05/06` 结果目录，后续如果要跑标准 top-k，请先控制
+  `max_eval_batches`
+  和
+  `generation_eval_samples`
+  再决定是否做更大的正式评估。
+
+## 2026-03-25 CUDA Eval OOM Mitigation
+
+### 改了什么
+
+- 在
+  `model/train_retrosynthesis.py`
+  中新增了评估期 autocast helper：
+  CUDA 下默认自动选
+  `bf16`
+  或
+  `fp16`
+  做 loss 评估。
+- `evaluate_loss(...)`
+  和
+  `evaluate_repa_loss(...)`
+  现在都支持 `amp_dtype`，默认在 CUDA 上启用低精度评估，减少显存占用。
+- `model/evaluate_checkpoint.py`
+  和
+  `model/evaluate_repa_checkpoint.py`
+  新增
+  `--amp-dtype {fp32,fp16,bf16}`
+  参数；不传时也会自动走 CUDA 低精度评估。
+
+### 为什么改
+
+- 用户按
+  `batch_size = 64`
+  跑
+  `model/evaluate_repa_checkpoint.py`
+  时，在
+  `model/encoder/encoders.py`
+  的 encoder 前向阶段直接触发了 CUDA OOM。
+- 现场检查时，4090 上只有约
+  `18GB`
+  空闲显存，而 full-precision 的 REPA loss 评估配
+  `batch_size = 64`
+  显存压力过高。
+
+### 如何验证
+
+- 静态编译通过：
+  `python -m py_compile model/train_retrosynthesis.py model/train_retrosynthesis_repa.py model/evaluate_checkpoint.py model/evaluate_repa_checkpoint.py`
+- smoke 验证：
+  用原始用户命令的核心配置
+  `device=cuda`
+  `batch_size=64`
+  `max_eval_batches=1`
+  `generation_eval_samples=0`
+  再加
+  `--amp-dtype bf16`
+  重跑后成功完成，输出：
+  `eval_loss = 1.353245`
+  `eval_ce_loss = 1.281749`
+  `eval_align_loss = 0.071496`
+  没有再触发 CUDA OOM。
+
+### 风险与待办
+
+- 低精度评估会让 loss 数值有轻微浮动，不应和历史 full-precision 小数点后很多位做严格逐位比较。
+- 即使启用 autocast，`generation_beam_width = 10`
+  的大规模正式评估仍然耗时很高；显存问题缓解了，不代表 top-k 评估成本低。
+
+## 2026-03-25 Smoke Artifact Cleanup
+
+### 本次动作
+
+- 按用户要求，删除了 `model/` 下所有名称带 `smoke` 的历史开发测试产物，覆盖：
+  `model/checkpoints_smoke`
+  `model/checkpoints_smoke_preview`
+  `model/checkpoints_results_smoke`
+  `model/results/preprocess_smoke`
+  `model/results/periodic_smoke`
+  `model/results/checkpoint_smoke`
+  `model/results/repa_smoke`
+  `model/results/repa_smoke_ckpt`
+  `model/results/repa_eval_smoke`
+  `model/results/repa_tok_smoke`
+  `model/results/repa_tok_smoke_ckpt`
+  `model/results/repa_tok_eval_smoke`
+
+### 验证
+
+- 重新扫描
+  `find model -maxdepth 3 | rg 'smoke'`
+  后已无任何匹配项，说明 `model/` 下 smoke 目录已清空。
+
+### 说明
+
+- 这次删除只清理开发 smoke 产物，没有动
+  `repa_probe`
+  `stage1_full`
+  `stage2_full`
+  等正式或半正式实验目录。
