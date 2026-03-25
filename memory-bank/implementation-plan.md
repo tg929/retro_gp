@@ -70,6 +70,17 @@
 - 不要让不同 planner 无意中共享 one-step cache。
 - 不要让某个 planner 使用不同的 leaf 逻辑、不同 stock、不同 one-step 候选过滤链路。
 
+## Experiment Output Naming
+
+- 从 `2026-03-25` 起，`model/` 下新增实验输出目录统一带日期和当日序号后缀：
+  `MMDD_01`、`MMDD_02`、`MMDD_03` ...
+- checkpoint 目录和结果目录都遵循这个规则，推荐保留用途前缀，再追加日期序号，例如：
+  `model/checkpoints_repa_0325_01`
+  `model/results/repa_eval_0325_02`
+  `model/results/repa_test_0325_03`
+- 如果是“复用旧 checkpoint 做新评估”，不要改旧权重目录；只给新的 `model/results/` 输出目录加新的日期序号。
+- 需要追溯“某个结果目录对应哪个 checkpoint”时，以结果目录里的 `run_config.json` 和 `metrics.json` 为准，不靠目录名硬编码来源。
+
 ## Documentation Rules
 
 - 新增或替换入口脚本后，更新 `memory-bank/architecture.md`。

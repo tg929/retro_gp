@@ -279,3 +279,116 @@
   在新的双预算截断规则下，所有样本都满足
   `sum(teacher_group_lengths) == actual_teacher_subtoken_count`。
   这说明这次正式训练里暴露出来的长样本截断 bug 已经被压住。
+
+## 2026-03-25
+
+### 本次动作
+
+- 确认了历史 REPA 权重目录 `model/checkpoints_repa_probe-2/` 是完整可用的一组训练产物，包含：
+  `final_model.pt/.json`
+  `final_resume.pt/.json`
+  `latest_model.pt/.json`
+  `latest_resume.pt/.json`
+  以及周期保存的 `model_step_00036000.pt/.json`。
+- 确认 `model/checkpoints_repa_probe-2/final_model.json` 记录的最终训练步数是
+  `global_step = 50652`，因此当前这轮 `repa_probe-2` 的最终模型权重应以
+  `final_model.pt` 为主，而不是目录里的中间 step checkpoint。
+- 对比了这轮 REPA 已有的 eval 记录：
+  `model/results/repa_probe-2/eval_metrics.csv` 中 final 的
+  `eval_loss = 1.317595`
+  优于
+  `model/results/repa_probe-2_checkpoints/step_00036000_eval64/metrics.json` 中 step 36000 的
+  `eval_loss = 1.336737`；
+  因此这次新的评估与测试继续选用
+  `model/checkpoints_repa_probe-2/final_model.pt`。
+- 用这份历史权重重新对处理后的 REPA 数据做了新的 dated 结果落盘：
+  `model/results/repa_eval_0325_01/`
+  `model/results/repa_test_0325_02/`
+- 同步把 `model/` 实验输出目录的命名约定写入了 `memory-bank/implementation-plan.md`：
+  从现在开始，新实验的 checkpoint/results 目录统一采用
+  `MMDD_01`、`MMDD_02`、`MMDD_03`
+  这种日期加当日序号的方式区分。
+
+### 验证
+
+- 新的 eval 结果目录
+  `model/results/repa_eval_0325_01/metrics.json`
+  使用：
+  `checkpoint = model/checkpoints_repa_probe-2/final_model.pt`
+  `csv = model/data_repa_v1/eval.csv`
+  `batch_size = 32`
+  `max_eval_batches = 128`
+  `generation_eval_samples = 64`
+  得到：
+  `eval_loss = 1.328984`
+  `eval_ce_loss = 1.260443`
+  `eval_align_loss = 0.068541`
+  `eval_seq_align_loss = 0.050643`
+  `eval_tok_align_loss = 0.317385`
+  `generation_exact = 0.0`
+- 新的 test 结果目录
+  `model/results/repa_test_0325_02/metrics.json`
+  使用相同 checkpoint 和相同评估口径，在
+  `model/data_repa_v1/test.csv`
+  上得到：
+  `eval_loss = 1.326400`
+  `eval_ce_loss = 1.258189`
+  `eval_align_loss = 0.068211`
+  `eval_seq_align_loss = 0.049906`
+  `eval_tok_align_loss = 0.316102`
+  `generation_exact = 0.0`
+- 两个新结果目录里都已写出：
+  `metrics.json`
+  `run_config.json`
+  `generation_examples.csv`
+  可直接回看预测样本。
+- 随后又补跑了一组更完整的 full eval / full test 结果，继续使用同一份历史权重
+  `model/checkpoints_repa_probe-2/final_model.pt`，
+  输出目录为：
+  `model/results/repa_eval_0325_03/`
+  `model/results/repa_test_0325_04/`
+- 这组 full 结果使用：
+  `batch_size = 64`
+  `max_eval_batches = null`
+  `generation_eval_samples = 128`
+  也就是 loss 完整跑满整个 split，只把生成 exact-match 保留为 128 条样本抽样。
+- full eval 指标为：
+  `eval_loss = 1.328951`
+  `eval_ce_loss = 1.260346`
+  `eval_align_loss = 0.068605`
+  `eval_seq_align_loss = 0.051515`
+  `eval_tok_align_loss = 0.317269`
+  `generation_exact = 0.015625`
+  对应 `128` 条生成样本里命中 `2` 条 exact match。
+- full test 指标为：
+  `eval_loss = 1.331448`
+  `eval_ce_loss = 1.262749`
+  `eval_align_loss = 0.068699`
+  `eval_seq_align_loss = 0.051496`
+  `eval_tok_align_loss = 0.317746`
+  `generation_exact = 0.0078125`
+  对应 `128` 条生成样本里命中 `1` 条 exact match。
+
+### 当前判断
+
+- `repa_probe-2` 这轮历史权重的最佳已知候选仍然是
+  `model/checkpoints_repa_probe-2/final_model.pt`。
+- 这次新的 quick eval / quick test 在 loss 上比较稳定，eval/test 数值接近，没有出现明显 split gap；
+  但 `generation_exact` 依然是 `0.0`，生成样本仍明显存在塌缩或无关长串输出，说明当前 REPA 主线还没有把较低 loss 转化成可用的条件生成质量。
+- 补跑 full eval / full test 后，可以更明确地说：
+  这份权重在 loss 上的 split gap 很小，
+  `full eval_loss = 1.328951`
+  `full test_loss = 1.331448`
+  差值约 `0.0025`；
+  但生成质量仍然偏弱，只是在 `128` 条样本抽样上已经不是完全 `0` 命中，而是出现了极少量 exact match。
+
+### 风险与待办
+
+- 这次 dated 结果目录采用的是快速评估口径：
+  `batch_size = 32`
+  `max_eval_batches = 128`
+  `generation_eval_samples = 64`
+  不是完整跑完全部 eval/test split 的 exhaustive 结果。
+- 如果后续要写正式实验汇报，建议再对选中的 checkpoint 跑一次 full eval / full test，或者至少增大 `max_eval_batches` 与 `generation_eval_samples` 做更稳的对照。
+- 当前 `0325_03 / 0325_04` 已经把 loss 完整跑满了 eval/test split；
+  但生成 exact 仍然只是 `128` 条样本抽样，不是对全部 `10w+` 条样本做逐条生成。
