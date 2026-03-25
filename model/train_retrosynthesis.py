@@ -247,7 +247,7 @@ def evaluate_loss(model, dataloader, device, max_batches=None, amp_dtype=None):
 
 
 def evaluate_generation(model, dataset, collator, device, sample_count, max_new_tokens, beam_width,
-                        length_penalty=0.0):
+                        length_penalty=0.0, length_norm_alpha=1.0):
     total = min(sample_count, len(dataset))
     raw_matches = 0
     top1_matches = 0
@@ -270,6 +270,7 @@ def evaluate_generation(model, dataset, collator, device, sample_count, max_new_
                 beam_width=beam_width,
                 return_all_beams=beam_width > 1,
                 length_penalty=length_penalty,
+                length_norm_alpha=length_norm_alpha,
             )
             pred_ids = pred_output if isinstance(pred_output, list) else [pred_output]
             beam_preds = decode_prediction_sequences(model.decoder_tokenizer, pred_ids)
@@ -321,6 +322,7 @@ def evaluate_generation(model, dataset, collator, device, sample_count, max_new_
         "generation_eval_samples": total,
         "generation_beam_width": beam_width,
         "generation_length_penalty": length_penalty,
+        "generation_length_norm_alpha": length_norm_alpha,
     }
     return generation_metrics, examples
 
@@ -478,6 +480,7 @@ def parse_args():
     parser.add_argument("--generation-max-new-tokens", type=int, default=128)
     parser.add_argument("--generation-beam-width", type=int, default=1)
     parser.add_argument("--generation-length-penalty", type=float, default=0.0)
+    parser.add_argument("--generation-length-norm-alpha", type=float, default=1.0)
     parser.add_argument("--preview-samples", type=int, default=3)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -635,6 +638,7 @@ def main():
                     args.generation_max_new_tokens,
                     args.generation_beam_width,
                     args.generation_length_penalty,
+                    args.generation_length_norm_alpha,
                 )
                 eval_row.update(
                     {

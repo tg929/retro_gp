@@ -379,15 +379,33 @@ class GPT(nn.Module):
 
         return x, mask
 
-    def _finalize_beam_candidates(self, candidates, input_length, beam_width, linker=False, length_penalty=0.0):
+    def _length_normalized_score(self, raw_score, generated_length, alpha):
+        if alpha <= 0.0:
+            return raw_score
+        norm = ((5.0 + generated_length) ** alpha) / (6.0 ** alpha)
+        return raw_score / norm
+
+    def _rank_beam_candidate(self, raw_score, seq, input_length, length_norm_alpha, length_penalty):
+        generated_length = max(seq.shape[1] - input_length, 1)
+        normalized_score = self._length_normalized_score(raw_score, generated_length, length_norm_alpha)
+        return normalized_score - generated_length * length_penalty
+
+    def _finalize_beam_candidates(self, candidates, input_length, beam_width, linker=False,
+                                  length_penalty=0.0, length_norm_alpha=1.0):
         reranked = []
-        for score, seq, ended in candidates:
-            adjusted_score = score - (seq.shape[1] - input_length) * length_penalty
+        for raw_score, seq, ended in candidates:
+            adjusted_score = self._rank_beam_candidate(
+                raw_score,
+                seq,
+                input_length,
+                length_norm_alpha=length_norm_alpha,
+                length_penalty=length_penalty,
+            )
             if linker:
                 star_num = int((seq == 256).sum().item())
                 if star_num != 4:
                     adjusted_score -= 2000000
-            reranked.append((adjusted_score, seq, ended))
+            reranked.append((adjusted_score, raw_score, seq, ended))
         return sorted(reranked, key=lambda x: -x[0])[:beam_width]
 
     @torch.inference_mode()
@@ -395,7 +413,7 @@ class GPT(nn.Module):
                              temperature=0.0, top_k=None,  rp=1.0, stream=True,
                              kv_cache=True, is_simulation=False, linker=False,
                              encoder_hidden_states=None, encoder_attention_mask=None,
-                             return_all=False, length_penalty=0.0):
+                             return_all=False, length_penalty=0.0, length_norm_alpha=1.0):
         if idx.size(0) != 1:
             raise ValueError("beam_search_generate currently supports batch_size=1")
 
@@ -403,16 +421,23 @@ class GPT(nn.Module):
         # recompute each branch from its full prefix to keep scores correct.
         kv_cache = False
 
-        beam = [(0.0, idx, False)]
+        beam = [(0.0, 0.0, idx, False)]
         eos_id = tokenizer.eos_token_id
         candidates = list(beam)
         input_length = idx.shape[1]
 
         for _ in range(max_new_tokens):
             candidates = []
-            for score, seq, ended in beam:
+            for _, raw_score, seq, ended in beam:
                 if ended:
-                    candidates.append((score, seq, ended))
+                    rank_score = self._rank_beam_candidate(
+                        raw_score,
+                        seq,
+                        input_length,
+                        length_norm_alpha=length_norm_alpha,
+                        length_penalty=length_penalty,
+                    )
+                    candidates.append((rank_score, raw_score, seq, ended))
                     continue
 
                 logits, _, _ = self(
@@ -437,10 +462,10 @@ class GPT(nn.Module):
                 top_count = min(beam_width, log_probs.size(-1))
                 top_probs, top_indices = torch.topk(log_probs, top_count)
                 for i in range(top_count):
-                    new_score = score + top_probs[0, i].item()
+                    new_raw_score = raw_score + top_probs[0, i].item()
                     new_token = top_indices[0, i].view(1, 1)
                     if ((new_token == 21).sum() + (new_token == 26).sum() + (new_token == 32).sum() != 0):
-                        new_score = -200000
+                        new_raw_score = -200000
                     new_seq = torch.cat([seq, new_token], dim=1)
                     new_ended = False
                     if linker:
@@ -450,31 +475,39 @@ class GPT(nn.Module):
                             left_num = int((seq == 17).sum().item())
                             right_num = int((seq == 18).sum().item())
                             if star_num != 4:
-                                new_score = -20000000
+                                new_raw_score = -20000000
                             if left_num != right_num:
-                                new_score = -20000000
+                                new_raw_score = -20000000
                         elif new_token.item() == eos_id:
                             new_ended = True
-                            new_score = -20000000
+                            new_raw_score = -20000000
                     elif new_token.item() == eos_id:
                         new_ended = True
-                    candidates.append((new_score, new_seq, new_ended))
+                    rank_score = self._rank_beam_candidate(
+                        new_raw_score,
+                        new_seq,
+                        input_length,
+                        length_norm_alpha=length_norm_alpha,
+                        length_penalty=length_penalty,
+                    )
+                    candidates.append((rank_score, new_raw_score, new_seq, new_ended))
 
             beam = sorted(candidates, key=lambda x: -x[0])[:beam_width]
-            if all(ended for _, _, ended in beam):
+            if all(ended for _, _, _, ended in beam):
                 break
 
         beam = self._finalize_beam_candidates(
-            candidates,
+            [(raw_score, seq, ended) for _, raw_score, seq, ended in candidates],
             input_length,
             beam_width,
             linker=linker,
             length_penalty=length_penalty,
+            length_norm_alpha=length_norm_alpha,
         )
         if return_all:
-            yield [candidate[1][:, input_length:] for candidate in beam]
+            yield [candidate[2][:, input_length:] for candidate in beam]
         else:
-            yield beam[0][1][:, input_length:]
+            yield beam[0][2][:, input_length:]
 
 
 

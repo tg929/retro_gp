@@ -775,3 +775,87 @@
 - 如果 length-normalized beam 之后仍然严重塌到
   `CC`，
   那就可以更有把握地把主要矛头转回训练侧的条件控制能力，而不是继续纠缠 decode heuristic。
+
+## 2026-03-26 Length-Normalized Beam Search
+
+### 本次动作
+
+- 将 beam search 的排序从“累计 logprob 直接求和”升级成标准长度归一化，并且不只用于最终 rerank，而是同时用于每一步的 beam 保留和最终排序。
+- 采用了 GNMT 风格的长度归一化：
+  `score / (((5 + len)^alpha) / (6^alpha))`
+  ，默认
+  `alpha = 1.0`。
+- 新增了
+  `generation_length_norm_alpha`
+  参数，并贯通到：
+  [model.py](/data1/ytg/retrogp/model/decoder/model.py)
+  [retro_model.py](/data1/ytg/retrogp/model/retro_model.py)
+  [train_retrosynthesis.py](/data1/ytg/retrogp/model/train_retrosynthesis.py)
+  [evaluate_checkpoint.py](/data1/ytg/retrogp/model/evaluate_checkpoint.py)
+  [evaluate_repa_checkpoint.py](/data1/ytg/retrogp/model/evaluate_repa_checkpoint.py)
+
+### 如何验证
+
+- 静态编译通过：
+  `python -m py_compile model/decoder/model.py model/retro_model.py model/train_retrosynthesis.py model/evaluate_checkpoint.py model/evaluate_repa_checkpoint.py`
+- 新跑了两组 quick probe：
+  [repa_eval_0326_02](/data1/ytg/retrogp/model/results/repa_eval_0326_02)
+  `generation_eval_samples = 8`
+  [repa_eval_0326_03](/data1/ytg/retrogp/model/results/repa_eval_0326_03)
+  `generation_eval_samples = 16`
+  两组都使用：
+  `beam_width = 10`
+  `generation_length_penalty = 0.0`
+  `generation_length_norm_alpha = 1.0`
+
+### 关键发现
+
+- 长度归一化确实缓解了
+  `CC`
+  top-1 塌缩，但没有直接提升 exact match。
+- 在前
+  `8`
+  条样本上，对比旧 beam10 结果
+  [repa_eval_0326_01](/data1/ytg/retrogp/model/results/repa_eval_0326_01)
+  和新 normalized beam10 结果
+  [repa_eval_0326_02](/data1/ytg/retrogp/model/results/repa_eval_0326_02)：
+  `pred == CC`
+  从
+  `8/8`
+  降到
+  `5/8`，
+  平均预测长度从
+  `2.0`
+  提升到
+  `10.75`。
+- 在前
+  `16`
+  条样本上，对比旧 beam10 和新 normalized beam10：
+  `pred == CC`
+  从
+  `14/16`
+  降到
+  `9/16`，
+  平均预测长度从
+  `4.06`
+  提升到
+  `10.88`。
+- 但 exact match 没有同步抬升：
+  [repa_eval_0326_03/metrics.json](/data1/ytg/retrogp/model/results/repa_eval_0326_03/metrics.json)
+  仍然是
+  `generation_exact = 0.0625`
+  `generation_topk_exact = 0.0625`。
+- 这说明 decode 侧问题已经被拆成两层：
+  1. 旧 beam 的未归一化累计 logprob 确实在放大短序列偏置
+  2. 即使修正这个偏置，模型 top-1 仍然主要在一批高频酯类模板和
+  `CC`
+  之间摆动，product-conditioned control 依然不够强
+
+### 当前判断
+
+- 现在可以更有把握地区分两个问题：
+  长度归一化解决的是“beam 额外把结果压短”的问题；
+  它能让 top-1 候选更长、更不一边倒地塌到
+  `CC`，
+  但还不能把模型带到正确前体上。
+- 所以下一步的优先级应该从“继续调 decode heuristic”转向“增强条件控制本身”。
