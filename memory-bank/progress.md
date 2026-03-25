@@ -859,3 +859,120 @@
   `CC`，
   但还不能把模型带到正确前体上。
 - 所以下一步的优先级应该从“继续调 decode heuristic”转向“增强条件控制本身”。
+
+## 2026-03-26 REPA Conditioning Diagnostics
+
+### 本次动作
+
+- 新增训练侧条件控制诊断脚本：
+  [analyze_repa_conditioning.py](/data1/ytg/retrogp/model/analyze_repa_conditioning.py)
+- 脚本在同一批样本上同时计算三种 teacher-forced 前向：
+  1. 正确 product memory
+  2. 无 product memory
+  3. 打乱后的 product memory
+- 输出指标包括：
+  `ce_cond / ce_none / ce_shuf`
+  `token_acc_cond / none / shuf`
+  `first/second token acc`
+  `first/second token top1 C rate`
+  `kl_cond_none / kl_cond_shuf`
+  以及每层 cross-attn / self-attn 输出强度比。
+- 跑了两份 matched 配置的 REPA 对照，结果落在：
+  [repa_conditioning_0326_04](/data1/ytg/retrogp/model/results/repa_conditioning_0326_04)
+  其中关键文件是：
+  [probe1_matched.json](/data1/ytg/retrogp/model/results/repa_conditioning_0326_04/probe1_matched.json)
+  [probe2.json](/data1/ytg/retrogp/model/results/repa_conditioning_0326_04/probe2.json)
+
+### 如何验证
+
+- 脚本静态编译通过：
+  `python -m py_compile model/analyze_repa_conditioning.py`
+- 实测命令：
+  对
+  `checkpoints_repa_probe-1/final_model.pt`
+  和
+  `checkpoints_repa_probe-2/final_model.pt`
+  分别在
+  `eval.csv`
+  上跑
+  `batch_size = 4`
+  `max_batches = 16`
+  `device = cuda`
+  `amp_dtype = bf16`
+
+### 关键发现
+
+- cross-attn 不是“完全没用”：
+  正确 product 和打乱 product 之间确实有稳定差异。
+  例如：
+  `probe-1`
+  的
+  `ce_gain_vs_shuf = 0.1138`
+  `probe-2`
+  的
+  `ce_gain_vs_shuf = 0.1338`
+  说明正确 product memory 比错配 memory 仍然有一点帮助。
+- 但这点帮助非常小，远小于
+  “有 memory vs 没 memory”
+  的差距；
+  也就是说模型主要学到的是
+  “要有一份 memory”
+  ，而不是
+  “要用对这份 product memory”。
+- 更关键的是，
+  `probe-2`
+  并没有表现出更强的 product-conditioned next-token control，反而表现出更强的无条件先验：
+  `probe-1`
+  里
+  `first_token_acc_none = 0.0`
+  `second_token_acc_none = 0.0`
+  但
+  `probe-2`
+  里
+  `first_token_acc_none = 0.875`
+  `second_token_acc_none = 0.4375`
+  这说明
+  `probe-2`
+  在没有 product 条件时，也已经会强烈地自己往高频前缀上走。
+- 对应地，
+  `probe-2`
+  的
+  `ce_none`
+  从
+  `16.61`
+  降到
+  `10.59`
+  ，而
+  `ce_cond`
+  只从
+  `1.291`
+  小幅降到
+  `1.279`
+  。
+  这意味着：
+  REPA 对齐让整体 decoder 分布更“稳”了，但没有显著拉大“正确 product vs 无 product”的 next-token 依赖。
+- 从 shuffled 对照看也是同一个结论：
+  `token_acc_gain_vs_shuf`
+  反而从
+  `0.0249`
+  降到
+  `0.0087`
+  ，说明
+  `probe-2`
+  虽然更稳定，但对“这是不是正确 product”这件事并没有变得更敏感。
+
+### 当前判断
+
+- 现在可以比较明确地回答三个问题：
+  1. cross-attn 有在工作，但强度主要体现在“提供一份 memory”，不是“严格区分正确/错误 product”
+  2. teacher 对齐没有明显改善 next-token 条件化，反而伴随更强的无条件高频前缀先验
+  3. 如果要继续往前推，确实需要更直接的 product-conditioned decoding 约束，而不是只靠 hidden-state alignment
+
+### 待办
+
+- 下一步优先考虑在训练目标里显式区分
+  正确 product
+  和
+  错误 product
+  的 decoding：
+  例如 wrong-product contrastive CE、条件化 margin loss，或直接约束正确 product 下的 token logits 相对错配 product 更高。
