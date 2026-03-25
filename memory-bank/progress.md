@@ -551,3 +551,146 @@
   `stage1_full`
   `stage2_full`
   等正式或半正式实验目录。
+
+## 2026-03-26 REPA `CC` Collapse Analysis
+
+### 本次动作
+
+- 针对
+  `model/checkpoints_repa_probe-2/final_model.pt`
+  在
+  [repa_eval_0325_05](/data1/ytg/retrogp/model/results/repa_eval_0325_05)
+  中出现的大量
+  `CC`
+  预测，拆成四块做排查：
+  训练分布、token 频率、解码偏置、teacher 对齐是否有效传到 decoder。
+- 统计了
+  `model/data_repa_v1/{train,eval,test}.csv`
+  的目标分布和前缀分布，重点看：
+  exact target `CC`
+  比例、
+  首 token `C`
+  比例、
+  前两 token 为
+  `C C`
+  的比例。
+- 统计了
+  [repa_eval_0325_03/generation_examples.csv](/data1/ytg/retrogp/model/results/repa_eval_0325_03/generation_examples.csv)
+  和
+  [repa_eval_0325_05/generation_examples.csv](/data1/ytg/retrogp/model/results/repa_eval_0325_05/generation_examples.csv)
+  的预测长度、前缀分布和 beam 候选分布。
+- 对单样本做了 logits 探针，对比
+  “有 product 条件”
+  和
+  “无 encoder 条件”
+  的前两步 top logits，确认条件信息确实在影响 decoder，但强度不足以压过
+  `C -> C`
+  的语言模型先验。
+
+### 关键发现
+
+- 数据分布确实强烈偏向碳开头，但不能单独解释当前塌缩：
+  train/eval/test 上 exact target
+  `CC`
+  只占约
+  `4.4%`，
+  但前两 token 为
+  `C C`
+  的样本约占
+  `44.8% ~ 45.0%`。
+  这说明
+  `CC`
+  作为“前缀”非常常见，但作为“完整答案”并不常见。
+- 生成结果明显过度放大了这个前缀先验：
+  在
+  [repa_eval_0325_05/generation_examples.csv](/data1/ytg/retrogp/model/results/repa_eval_0325_05/generation_examples.csv)
+  里，
+  `128/128`
+  条 top-1 预测都以
+  `C`
+  开头，
+  `121/128`
+  以
+  `CC`
+  开头，
+  `116/128`
+  直接等于
+  `CC`；
+  但同一批
+  `128`
+  条目标里只有
+  `6`
+  条真值是
+  `CC`。
+- beam search 的当前重排策略会进一步放大短序列偏置：
+  [model.py](/data1/ytg/retrogp/model/decoder/model.py#L382)
+  到
+  [model.py](/data1/ytg/retrogp/model/decoder/model.py#L391)
+  在最终 rerank 时对每个生成 token 额外减去
+  `0.2`，
+  这会系统性偏好更短输出。
+  直接体现在：
+  `0325_03`
+  的平均预测长度约
+  `34.0`
+  字符，
+  `0325_05`
+  降到约
+  `3.48`
+  字符，
+  同时 exact
+  `CC`
+  预测从
+  `33/128`
+  激增到
+  `116/128`。
+- 条件信息不是完全没进 decoder，但目前只是在“修边”，没有改变主导 token 先验：
+  单样本 logits 探针显示，无 encoder 条件时 decoder 在前两步会给
+  `C`
+  极高分，同时还混入
+  `(`、
+  `/`、
+  `[Si]`
+  等明显属于预训练语言模型先验的 token；
+  加上 product 条件后，这些噪声 token 会被压下去，`O`
+  和
+  `[EOS]`
+  的分数会抬高，但 top-1 依然常常保持
+  `C`
+  或
+  `C -> C`。
+- teacher 对齐项已经在训练里生效，但它没有直接约束 next-token logits：
+  [retro_model.py](/data1/ytg/retrogp/model/retro_model.py#L193)
+  到
+  [retro_model.py](/data1/ytg/retrogp/model/retro_model.py#L214)
+  的 REPA 辅助项是对最后几层 decoder hidden 做
+  sequence/token cosine 对齐，
+  再经过 projector 参与总 loss；
+  它优化的是表示空间，不是直接对生成分布做校正。
+  当前 quick eval 里
+  `eval_ce_loss ≈ 1.2629`
+  而加权后的
+  `eval_align_loss ≈ 0.0684`，
+  辅助项量级远小于 CE，说明它更像弱正则，而不是能主导解码行为的目标。
+
+### 当前判断
+
+- `CC`
+  塌缩不是单一原因，而是三件事叠加：
+  1. 数据前缀本身强烈偏向
+  `C -> C`
+  2. decoder 预训练先验很强，条件信息只造成有限重排
+  3. beam search 的长度惩罚把这种前缀偏置进一步放大成“尽快停在短串”
+- 所以目前不能把问题简单归咎为
+  “teacher 对齐完全无效”；
+  更准确的说法是：
+  teacher 对齐让 decoder 更像 reactant 表示了，但还没有强到足以显著提升 product-conditioned next-token control。
+
+### 待办
+
+- 下一步优先修 beam search 的长度重排，去掉或重设
+  `-0.2 * length`
+  这类强短序列惩罚，再重新测
+  top-k。
+- 在修完解码偏置后，再判断是否需要继续动训练：
+  例如减弱 decoder 语言模型先验、强化 cross-attn 可训练范围、或提高与条件控制直接相关的训练信号。
