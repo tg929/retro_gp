@@ -976,3 +976,199 @@
   错误 product
   的 decoding：
   例如 wrong-product contrastive CE、条件化 margin loss，或直接约束正确 product 下的 token logits 相对错配 product 更高。
+
+## 2026-03-26 Wrong-Product Contrastive Loss
+
+### 目标
+
+- 基于上一条 conditioning 诊断结果，继续往训练侧推进：
+  不再只做 hidden-state alignment，
+  而是显式要求
+  正确 product
+  条件下的 decoding
+  优于
+  错误 product
+  条件。
+
+### 改动
+
+- 在
+  `model/retro_model.py`
+  里给
+  `forward_repa()`
+  新增：
+  `wrong_product_weight`
+  和
+  `wrong_product_margin`
+  。
+- 新增基于 logits 的逐样本加权 CE 计算，
+  并在 batch 内使用
+  `memory.roll(1, 0)`
+  作为廉价的 wrong-product negative。
+- 训练目标新增：
+  `contrastive_loss = relu(margin + CE(correct) - CE(wrong))`
+  ，总损失变成：
+  `ce_loss + align_loss + wrong_product_weight * contrastive_loss`
+- 额外记录三个诊断量：
+  `contrastive_loss`
+  `wrong_ce_loss`
+  `wrong_ce_gap`
+- 在
+  `model/train_retrosynthesis_repa.py`
+  和
+  `model/evaluate_repa_checkpoint.py`
+  里把这两个新参数接到 CLI，
+  并把新指标接进训练日志、eval 指标和终端输出。
+
+### 验证
+
+- 静态检查通过：
+  `python -m py_compile model/retro_model.py model/train_retrosynthesis_repa.py model/evaluate_repa_checkpoint.py model/analyze_repa_conditioning.py`
+- 做了一个最小 CUDA 前向/反向验证：
+  使用
+  `checkpoints_repa_probe-2/final_model.pt`
+  ，取
+  `train.csv`
+  前 2 条样本，
+  `wrong_product_weight = 0.2`
+  `wrong_product_margin = 0.2`
+  ，结果为：
+  `loss = 1.262361`
+  `ce_loss = 1.204318`
+  `align_loss = 0.058043`
+  `contrastive_loss = 0.0`
+  `wrong_ce_loss = 2.494338`
+  `wrong_ce_gap = 1.415969`
+  且
+  `aligner`
+  和 decoder cross-attn 路径都有梯度。
+- 做了一个最小 CLI 评估验证：
+  `evaluate_repa_checkpoint.py`
+  在
+  `cuda + bf16`
+  下用
+  `batch_size = 2`
+  `max_eval_batches = 1`
+  `generation_eval_samples = 0`
+  成功跑通，
+  输出：
+  `eval_loss = 1.293783`
+  `eval_ce_loss = 1.208460`
+  `eval_align_loss = 0.061274`
+  `eval_contrastive_loss = 0.120244`
+  `eval_wrong_ce_loss = 1.284493`
+  `eval_wrong_ce_gap = 0.079756`
+
+### 当前判断
+
+- 这条 wrong-product 约束已经接进主训练/评估链路，
+  默认仍然向后兼容：
+  `wrong_product_weight = 0.0`
+  时行为与原来一致。
+- 当前最直接的实验入口是：
+  在 REPA 训练命令上加
+  `--wrong-product-weight 0.2 --wrong-product-margin 0.2`
+  ，先做一轮小规模 probe。
+- 需要注意：
+  现在的 negative 是 batch 内滚动错配，
+  属于廉价近似；
+  在容易样本上 margin 可能已经满足，
+  导致单 batch 的
+  `contrastive_loss`
+  为
+  `0`
+  。
+  如果后续信号还是太弱，需要再考虑更难的 negatives 或更大的 margin。
+
+## 2026-03-26 REPA Training OOM Fix
+
+### 问题
+
+- 在
+  `wrong-product contrastive`
+  接入后，REPA 训练在
+  `optimizer.step()`
+  首次初始化 Adam 状态时 OOM。
+- 直接排查后发现不是单一的 activation 峰值问题，而是两个问题叠加：
+  1.
+  `train_retrosynthesis_repa.py`
+  训练主循环没有 AMP；
+  2.
+  `configure_repa_training()`
+  实际把
+  encoder 以外的全部参数
+  都解冻了，
+  `top_decoder_blocks`
+  只影响学习率分组，不影响冻结边界。
+
+### 改动
+
+- 在
+  `model/train_retrosynthesis_repa.py`
+  训练主循环加入
+  `--train-amp-dtype`
+  ，支持
+  `fp32/fp16/bf16`
+  。
+- 训练时用 autocast 包裹
+  `forward_repa()`
+  ，并在
+  `fp16`
+  下启用
+  `GradScaler`
+  。
+- `resume` checkpoint 现在会保存/恢复 scaler state。
+- 修正
+  `configure_repa_training()`
+  ：
+  默认冻结全部参数，只解冻：
+  `aligner`
+  `sequence_projector`
+  `token_projector`
+  `decoder.ln_f`
+  `decoder.head`
+  所有 block 的
+  `cross_attn`
+  和
+  `ln_cross`
+  ，以及最后
+  `top_decoder_blocks`
+  个 block 的
+  `attn/mlp/ln1/ln2`
+  。
+- 同时把
+  `token_projector`
+  纳入 fast LR 组，避免它被错误归到低速组。
+
+### 验证
+
+- 修复前：
+  `trainable_params = 900,536,320`
+- 修复后：
+  `trainable_params = 446,101,504`
+- 用以下最小 smoke 训练验证通过：
+  `batch_size = 2`
+  `grad_accumulation = 1`
+  `max_train_steps = 1`
+  `wrong_product_weight = 0.2`
+  `train_amp_dtype = bf16`
+  `device = cuda`
+- 结果：
+  `epoch=0 step=1 train_loss=1.252249`
+  `ce_loss=1.193613`
+  `align_loss=0.058636`
+  `wrong_ce_loss=2.005664`
+  `wrong_ce_gap=1.199437`
+  随后 eval 也正常完成：
+  `eval_loss=1.293783`
+  `eval_contrastive_loss=0.120244`
+  `eval_wrong_ce_gap=0.079756`
+
+### 当前判断
+
+- 这次 OOM 的根因不是用户命令写错，而是 REPA 训练冻结策略过宽，导致 Adam 状态规模远超 24GB 卡可承受范围。
+- 修完后，即使卡上还有一个约
+  `5.8GB`
+  的外部 Python 进程，占用下这条 1-step smoke 仍然能跑通。
+- 后续正式训练建议默认带：
+  `--train-amp-dtype bf16`

@@ -145,10 +145,36 @@ class RepaCollator:
         }
 
 
-def configure_repa_training(model):
-    for name, param in model.named_parameters():
-        param.requires_grad = not name.startswith("encoder.")
+def freeze_module(module):
+    for param in module.parameters():
+        param.requires_grad = False
+
+
+def unfreeze_module(module):
+    for param in module.parameters():
+        param.requires_grad = True
+
+
+def configure_repa_training(model, top_decoder_blocks):
+    freeze_module(model)
     model.encoder.eval()
+
+    unfreeze_module(model.aligner)
+    unfreeze_module(model.sequence_projector)
+    unfreeze_module(model.token_projector)
+    unfreeze_module(model.decoder.ln_f)
+    unfreeze_module(model.decoder.head)
+
+    for block in model.decoder.blocks:
+        if block.cross_attn is not None:
+            unfreeze_module(block.cross_attn)
+            unfreeze_module(block.ln_cross)
+
+    for block in list(model.decoder.blocks)[-top_decoder_blocks:]:
+        unfreeze_module(block.attn)
+        unfreeze_module(block.ln1)
+        unfreeze_module(block.mlp)
+        unfreeze_module(block.ln2)
 
 
 def build_repa_optimizer(model, adapter_lr, top_decoder_lr, base_decoder_lr, top_decoder_blocks, weight_decay):
@@ -160,7 +186,13 @@ def build_repa_optimizer(model, adapter_lr, top_decoder_lr, base_decoder_lr, top
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        if name.startswith("aligner.") or name.startswith("sequence_projector.") or ".cross_attn." in name or ".ln_cross." in name:
+        if (
+            name.startswith("aligner.")
+            or name.startswith("sequence_projector.")
+            or name.startswith("token_projector.")
+            or ".cross_attn." in name
+            or ".ln_cross." in name
+        ):
             fast_params.append(param)
             continue
         if name.startswith("decoder.head") or name.startswith("decoder.ln_f"):
@@ -202,13 +234,16 @@ def count_trainable_params(model):
 
 
 def evaluate_repa_loss(model, dataloader, device, seq_align_weight, tok_align_weight, eos_weight, max_batches=None,
-                       amp_dtype=None):
+                       amp_dtype=None, wrong_product_weight=0.0, wrong_product_margin=0.2):
     model.eval()
     total_loss = 0.0
     total_ce = 0.0
     total_align = 0.0
     total_seq_align = 0.0
     total_tok_align = 0.0
+    total_contrastive = 0.0
+    total_wrong_ce = 0.0
+    total_wrong_gap = 0.0
     total_batches = 0
     amp_dtype = default_eval_amp_dtype(device) if amp_dtype is None else amp_dtype
     with torch.no_grad():
@@ -222,12 +257,17 @@ def evaluate_repa_loss(model, dataloader, device, seq_align_weight, tok_align_we
                     seq_align_weight=seq_align_weight,
                     tok_align_weight=tok_align_weight,
                     eos_weight=eos_weight,
+                    wrong_product_weight=wrong_product_weight,
+                    wrong_product_margin=wrong_product_margin,
                 )
             total_loss += outputs["loss"].item()
             total_ce += outputs["ce_loss"].item()
             total_align += outputs["align_loss"].item()
             total_seq_align += outputs["seq_align_loss"].item()
             total_tok_align += outputs["tok_align_loss"].item()
+            total_contrastive += outputs["contrastive_loss"].item()
+            total_wrong_ce += outputs["wrong_ce_loss"].item()
+            total_wrong_gap += outputs["wrong_ce_gap"].item()
             total_batches += 1
     model.train()
     denom = max(total_batches, 1)
@@ -237,10 +277,13 @@ def evaluate_repa_loss(model, dataloader, device, seq_align_weight, tok_align_we
         "eval_align_loss": total_align / denom,
         "eval_seq_align_loss": total_seq_align / denom,
         "eval_tok_align_loss": total_tok_align / denom,
+        "eval_contrastive_loss": total_contrastive / denom,
+        "eval_wrong_ce_loss": total_wrong_ce / denom,
+        "eval_wrong_ce_gap": total_wrong_gap / denom,
     }
 
 
-def save_resume_snapshot(save_dir, global_step, model, optimizer, scheduler, meta):
+def save_resume_snapshot(save_dir, global_step, model, optimizer, scheduler, meta, scaler=None):
     stem = f"resume_step_{global_step:08d}"
     step_resume_path = save_dir / f"{stem}.pt"
     step_meta_path = save_dir / f"{stem}.json"
@@ -252,17 +295,21 @@ def save_resume_snapshot(save_dir, global_step, model, optimizer, scheduler, met
         "scheduler": scheduler.state_dict(),
         **meta,
     }
+    if scaler is not None and scaler.is_enabled():
+        payload["scaler"] = scaler.state_dict()
     save_torch(step_resume_path, payload)
     save_json(step_meta_path, meta)
     save_torch(latest_resume_path, payload)
     save_json(latest_resume_meta_path, meta)
 
 
-def load_resume_checkpoint(model, optimizer, scheduler, checkpoint_path, device):
+def load_resume_checkpoint(model, optimizer, scheduler, checkpoint_path, device, scaler=None):
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     model.load_state_dict(checkpoint["model"], strict=False)
     optimizer.load_state_dict(checkpoint["optimizer"])
     scheduler.load_state_dict(checkpoint["scheduler"])
+    if scaler is not None and scaler.is_enabled() and "scaler" in checkpoint:
+        scaler.load_state_dict(checkpoint["scaler"])
     for state in optimizer.state.values():
         for key, value in state.items():
             if torch.is_tensor(value):
@@ -293,6 +340,8 @@ def parse_args():
     parser.add_argument("--seq-align-weight", type=float, default=0.1)
     parser.add_argument("--tok-align-weight", type=float, default=0.2)
     parser.add_argument("--eos-weight", type=float, default=3.0)
+    parser.add_argument("--wrong-product-weight", type=float, default=0.0)
+    parser.add_argument("--wrong-product-margin", type=float, default=0.2)
     parser.add_argument("--top-decoder-blocks", type=int, default=4)
     parser.add_argument("--max-product-len", type=int, default=128)
     parser.add_argument("--max-reactants-len", type=int, default=128)
@@ -301,6 +350,7 @@ def parse_args():
     parser.add_argument("--limit-eval", type=int, default=None)
     parser.add_argument("--max-train-steps", type=int, default=None)
     parser.add_argument("--max-eval-batches", type=int, default=None)
+    parser.add_argument("--train-amp-dtype", choices=["fp32", "fp16", "bf16"], default=None)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args()
@@ -317,7 +367,7 @@ def main():
         raise ValueError("--eval-csv is required unless --disable-eval is set")
 
     model = RetrosynthesisModel().to(device)
-    configure_repa_training(model)
+    configure_repa_training(model, args.top_decoder_blocks)
 
     optimizer = build_repa_optimizer(
         model,
@@ -343,9 +393,11 @@ def main():
     if args.max_train_steps is not None:
         total_steps = min(total_steps, args.max_train_steps)
     scheduler = build_scheduler(optimizer, total_steps, args.warmup_ratio)
+    train_amp_dtype = default_eval_amp_dtype(device) if args.train_amp_dtype is None else args.train_amp_dtype
+    scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda" and train_amp_dtype == "fp16")
 
     if args.resume_from is not None:
-        resume_state = load_resume_checkpoint(model, optimizer, scheduler, args.resume_from, device)
+        resume_state = load_resume_checkpoint(model, optimizer, scheduler, args.resume_from, device, scaler=scaler)
     else:
         resume_state = None
         if args.init_checkpoint is not None:
@@ -364,6 +416,7 @@ def main():
 
     trainable_params = count_trainable_params(model)
     print(f"trainable_params={trainable_params}")
+    print(f"train_amp_dtype={train_amp_dtype}")
 
     train_loss_path = results_dir / "train_loss.csv"
     eval_metrics_path = results_dir / "eval_metrics.csv"
@@ -371,7 +424,18 @@ def main():
     if args.resume_from is None or not train_loss_path.exists():
         init_csv(
             train_loss_path,
-            ["epoch", "global_step", "train_loss", "ce_loss", "align_loss", "seq_align_loss", "tok_align_loss"],
+            [
+                "epoch",
+                "global_step",
+                "train_loss",
+                "ce_loss",
+                "align_loss",
+                "seq_align_loss",
+                "tok_align_loss",
+                "contrastive_loss",
+                "wrong_ce_loss",
+                "wrong_ce_gap",
+            ],
         )
     if args.eval_csv is not None and (args.resume_from is None or not eval_metrics_path.exists()):
         init_csv(
@@ -384,6 +448,9 @@ def main():
                 "eval_align_loss",
                 "eval_seq_align_loss",
                 "eval_tok_align_loss",
+                "eval_contrastive_loss",
+                "eval_wrong_ce_loss",
+                "eval_wrong_ce_gap",
             ],
         )
 
@@ -418,6 +485,9 @@ def main():
         accum_align = 0.0
         accum_seq_align = 0.0
         accum_tok_align = 0.0
+        accum_contrastive = 0.0
+        accum_wrong_ce = 0.0
+        accum_wrong_gap = 0.0
         accum_count = 0
 
         for batch_idx, batch in enumerate(train_loader):
@@ -425,26 +495,42 @@ def main():
                 continue
 
             batch = move_batch(batch, device)
-            outputs = model.forward_repa(
-                **batch,
-                seq_align_weight=args.seq_align_weight,
-                tok_align_weight=args.tok_align_weight,
-                eos_weight=args.eos_weight,
-            )
-            (outputs["loss"] / args.grad_accumulation).backward()
+            with get_eval_autocast_context(device, train_amp_dtype):
+                outputs = model.forward_repa(
+                    **batch,
+                    seq_align_weight=args.seq_align_weight,
+                    tok_align_weight=args.tok_align_weight,
+                    eos_weight=args.eos_weight,
+                    wrong_product_weight=args.wrong_product_weight,
+                    wrong_product_margin=args.wrong_product_margin,
+                )
+            scaled_loss = outputs["loss"] / args.grad_accumulation
+            if scaler.is_enabled():
+                scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
             accum_train += outputs["loss"].item()
             accum_ce += outputs["ce_loss"].item()
             accum_align += outputs["align_loss"].item()
             accum_seq_align += outputs["seq_align_loss"].item()
             accum_tok_align += outputs["tok_align_loss"].item()
+            accum_contrastive += outputs["contrastive_loss"].item()
+            accum_wrong_ce += outputs["wrong_ce_loss"].item()
+            accum_wrong_gap += outputs["wrong_ce_gap"].item()
             accum_count += 1
 
             should_step = accum_count == args.grad_accumulation or batch_idx == len(train_loader) - 1
             if not should_step:
                 continue
 
+            if scaler.is_enabled():
+                scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-            optimizer.step()
+            if scaler.is_enabled():
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
 
@@ -457,12 +543,26 @@ def main():
                 "align_loss": accum_align / accum_count,
                 "seq_align_loss": accum_seq_align / accum_count,
                 "tok_align_loss": accum_tok_align / accum_count,
+                "contrastive_loss": accum_contrastive / accum_count,
+                "wrong_ce_loss": accum_wrong_ce / accum_count,
+                "wrong_ce_gap": accum_wrong_gap / accum_count,
             }
             train_history.append(train_row)
             last_train_loss = float(train_row["train_loss"])
             append_csv_row(
                 train_loss_path,
-                ["epoch", "global_step", "train_loss", "ce_loss", "align_loss", "seq_align_loss", "tok_align_loss"],
+                [
+                    "epoch",
+                    "global_step",
+                    "train_loss",
+                    "ce_loss",
+                    "align_loss",
+                    "seq_align_loss",
+                    "tok_align_loss",
+                    "contrastive_loss",
+                    "wrong_ce_loss",
+                    "wrong_ce_gap",
+                ],
                 train_row,
             )
             print(
@@ -471,7 +571,10 @@ def main():
                 f"ce_loss={train_row['ce_loss']:.6f} "
                 f"align_loss={train_row['align_loss']:.6f} "
                 f"seq_align_loss={train_row['seq_align_loss']:.6f} "
-                f"tok_align_loss={train_row['tok_align_loss']:.6f}"
+                f"tok_align_loss={train_row['tok_align_loss']:.6f} "
+                f"contrastive_loss={train_row['contrastive_loss']:.6f} "
+                f"wrong_ce_loss={train_row['wrong_ce_loss']:.6f} "
+                f"wrong_ce_gap={train_row['wrong_ce_gap']:.6f}"
             )
 
             if args.save_every_steps is not None and global_step % args.save_every_steps == 0:
@@ -500,6 +603,7 @@ def main():
                         "global_step": global_step,
                         "train_loss": train_row["train_loss"],
                     },
+                    scaler=scaler,
                 )
 
             accum_train = 0.0
@@ -507,6 +611,9 @@ def main():
             accum_align = 0.0
             accum_seq_align = 0.0
             accum_tok_align = 0.0
+            accum_contrastive = 0.0
+            accum_wrong_ce = 0.0
+            accum_wrong_gap = 0.0
             accum_count = 0
 
             if args.max_train_steps is not None and global_step >= args.max_train_steps:
@@ -525,6 +632,8 @@ def main():
                     tok_align_weight=args.tok_align_weight,
                     eos_weight=args.eos_weight,
                     max_batches=args.max_eval_batches,
+                    wrong_product_weight=args.wrong_product_weight,
+                    wrong_product_margin=args.wrong_product_margin,
                 )
             )
             eval_history.append(eval_row)
@@ -538,6 +647,9 @@ def main():
                     "eval_align_loss",
                     "eval_seq_align_loss",
                     "eval_tok_align_loss",
+                    "eval_contrastive_loss",
+                    "eval_wrong_ce_loss",
+                    "eval_wrong_ce_gap",
                 ],
                 eval_row,
             )
@@ -547,7 +659,10 @@ def main():
                 f"eval_ce_loss={eval_row['eval_ce_loss']:.6f} "
                 f"eval_align_loss={eval_row['eval_align_loss']:.6f} "
                 f"eval_seq_align_loss={eval_row['eval_seq_align_loss']:.6f} "
-                f"eval_tok_align_loss={eval_row['eval_tok_align_loss']:.6f}"
+                f"eval_tok_align_loss={eval_row['eval_tok_align_loss']:.6f} "
+                f"eval_contrastive_loss={eval_row['eval_contrastive_loss']:.6f} "
+                f"eval_wrong_ce_loss={eval_row['eval_wrong_ce_loss']:.6f} "
+                f"eval_wrong_ce_gap={eval_row['eval_wrong_ce_gap']:.6f}"
             )
 
         if args.max_train_steps is not None and global_step >= args.max_train_steps:
@@ -571,12 +686,24 @@ def main():
     save_json(save_dir / "latest_model.json", final_meta)
     save_torch(
         save_dir / "final_resume.pt",
-        {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(), **final_resume_meta},
+        {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            **({"scaler": scaler.state_dict()} if scaler.is_enabled() else {}),
+            **final_resume_meta,
+        },
     )
     save_json(save_dir / "final_resume.json", final_resume_meta)
     save_torch(
         save_dir / "latest_resume.pt",
-        {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(), **final_resume_meta},
+        {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            **({"scaler": scaler.state_dict()} if scaler.is_enabled() else {}),
+            **final_resume_meta,
+        },
     )
     save_json(save_dir / "latest_resume.json", final_resume_meta)
 

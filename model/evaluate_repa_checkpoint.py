@@ -28,6 +28,8 @@ def parse_args():
     parser.add_argument("--seq-align-weight", type=float, default=0.1)
     parser.add_argument("--tok-align-weight", type=float, default=0.2)
     parser.add_argument("--eos-weight", type=float, default=3.0)
+    parser.add_argument("--wrong-product-weight", type=float, default=0.0)
+    parser.add_argument("--wrong-product-margin", type=float, default=0.2)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--max-eval-batches", type=int, default=None)
     parser.add_argument("--generation-eval-samples", type=int, default=16)
@@ -69,6 +71,8 @@ def main():
         eos_weight=args.eos_weight,
         max_batches=args.max_eval_batches,
         amp_dtype=args.amp_dtype,
+        wrong_product_weight=args.wrong_product_weight,
+        wrong_product_margin=args.wrong_product_margin,
     )
     generation_metrics, examples = evaluate_generation(
         model,
@@ -103,7 +107,10 @@ def main():
         f"eval_ce_loss={metrics['eval_ce_loss']:.6f} "
         f"eval_align_loss={metrics['eval_align_loss']:.6f} "
         f"eval_seq_align_loss={metrics['eval_seq_align_loss']:.6f} "
-        f"eval_tok_align_loss={metrics['eval_tok_align_loss']:.6f}"
+        f"eval_tok_align_loss={metrics['eval_tok_align_loss']:.6f} "
+        f"eval_contrastive_loss={metrics['eval_contrastive_loss']:.6f} "
+        f"eval_wrong_ce_loss={metrics['eval_wrong_ce_loss']:.6f} "
+        f"eval_wrong_ce_gap={metrics['eval_wrong_ce_gap']:.6f}"
     )
     print(f"generation_exact={generation_metrics['generation_exact']:.6f}")
     if args.generation_beam_width > 1:
