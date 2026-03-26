@@ -21,6 +21,9 @@ GENERATION_EXAMPLE_FIELDS = [
     "product",
     "target",
     "target_canonical",
+    "pred_token_len",
+    "eos_hit",
+    "hit_max_len",
     "pred",
     "pred_canonical",
     "beam_preds",
@@ -37,6 +40,10 @@ def get_eval_metric_fields(include_generation=True):
                 "generation_topk_exact",
                 "generation_raw_exact",
                 "generation_invalid_top1_rate",
+                "generation_eos_hit_rate",
+                "generation_hit_max_len_rate",
+                "generation_pred_len_avg",
+                "generation_pred_len_p95",
             ]
         )
     return fields
@@ -246,12 +253,24 @@ def evaluate_loss(model, dataloader, device, max_batches=None, amp_dtype=None):
     return total_loss / max(total_batches, 1)
 
 
-def evaluate_generation(model, dataset, collator, device, sample_count, max_new_tokens, beam_width):
+def evaluate_generation(
+    model,
+    dataset,
+    collator,
+    device,
+    sample_count,
+    max_new_tokens,
+    beam_width,
+    legacy_beam_token_penalty=False,
+):
     total = min(sample_count, len(dataset))
     raw_matches = 0
     top1_matches = 0
     topk_matches = 0
     invalid_top1 = 0
+    eos_hits = 0
+    hit_max_len = 0
+    pred_token_lens = []
     examples = []
 
     model.eval()
@@ -268,10 +287,19 @@ def evaluate_generation(model, dataset, collator, device, sample_count, max_new_
                 top_k=None,
                 beam_width=beam_width,
                 return_all_beams=beam_width > 1,
+                legacy_beam_token_penalty=legacy_beam_token_penalty,
             )
             pred_ids = pred_output if isinstance(pred_output, list) else [pred_output]
             beam_preds = decode_prediction_sequences(model.decoder_tokenizer, pred_ids)
             pred = beam_preds[0] if beam_preds else ""
+            top_pred = pred_ids[0]
+            top_pred_ids = top_pred[0].tolist() if top_pred.dim() == 2 else top_pred.tolist()
+            eos_token_id = model.decoder_tokenizer.eos_token_id
+            eos_pos = top_pred_ids.index(eos_token_id) if eos_token_id in top_pred_ids else -1
+            pred_token_len = eos_pos if eos_pos >= 0 else len(top_pred_ids)
+            max_generated_tokens = max(max_new_tokens - 2, 1) if beam_width <= 1 else max(max_new_tokens, 1)
+            eos_hit = int(eos_pos >= 0)
+            hit_max_len_flag = int((eos_hit == 0) and pred_token_len >= max_generated_tokens)
             target = item["reactants"].replace(" ", "")
             product = item["product"].replace(" ", "")
             target_canonical = canonicalize_precursor_set(target) or target
@@ -289,6 +317,9 @@ def evaluate_generation(model, dataset, collator, device, sample_count, max_new_
             top1_matches += int(canonical_match)
             topk_matches += int(best_match_rank != "")
             invalid_top1 += int(top1_canonical is None)
+            eos_hits += eos_hit
+            hit_max_len += hit_max_len_flag
+            pred_token_lens.append(pred_token_len)
             examples.append(
                 {
                     "sample_idx": idx,
@@ -300,6 +331,9 @@ def evaluate_generation(model, dataset, collator, device, sample_count, max_new_
                     "product": product,
                     "target": target,
                     "target_canonical": target_canonical,
+                    "pred_token_len": pred_token_len,
+                    "eos_hit": eos_hit,
+                    "hit_max_len": hit_max_len_flag,
                     "pred": pred,
                     "pred_canonical": top1_canonical or "",
                     "beam_preds": json.dumps(beam_preds, ensure_ascii=False),
@@ -311,11 +345,20 @@ def evaluate_generation(model, dataset, collator, device, sample_count, max_new_
             )
     model.train()
     denom = max(total, 1)
+    sorted_pred_lens = sorted(pred_token_lens)
+    pred_len_p95 = (
+        sorted_pred_lens[max(int(0.95 * len(sorted_pred_lens)) - 1, 0)]
+        if sorted_pred_lens else 0
+    )
     generation_metrics = {
         "generation_exact": top1_matches / denom,
         "generation_topk_exact": topk_matches / denom,
         "generation_raw_exact": raw_matches / denom,
         "generation_invalid_top1_rate": invalid_top1 / denom,
+        "generation_eos_hit_rate": eos_hits / denom,
+        "generation_hit_max_len_rate": hit_max_len / denom,
+        "generation_pred_len_avg": (sum(pred_token_lens) / len(pred_token_lens)) if pred_token_lens else 0.0,
+        "generation_pred_len_p95": pred_len_p95,
         "generation_eval_samples": total,
         "generation_beam_width": beam_width,
     }
@@ -474,6 +517,7 @@ def parse_args():
     parser.add_argument("--generation-eval-samples", type=int, default=0)
     parser.add_argument("--generation-max-new-tokens", type=int, default=128)
     parser.add_argument("--generation-beam-width", type=int, default=1)
+    parser.add_argument("--generation-legacy-beam-token-penalty", action="store_true")
     parser.add_argument("--preview-samples", type=int, default=3)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -616,6 +660,10 @@ def main():
                 "generation_topk_exact": "",
                 "generation_raw_exact": "",
                 "generation_invalid_top1_rate": "",
+                "generation_eos_hit_rate": "",
+                "generation_hit_max_len_rate": "",
+                "generation_pred_len_avg": "",
+                "generation_pred_len_p95": "",
             }
             print(f"epoch={epoch} eval_loss={eval_loss:.6f}")
 
@@ -630,6 +678,7 @@ def main():
                     args.generation_eval_samples,
                     args.generation_max_new_tokens,
                     args.generation_beam_width,
+                    args.generation_legacy_beam_token_penalty,
                 )
                 eval_row.update(
                     {
@@ -637,6 +686,10 @@ def main():
                         "generation_topk_exact": float(generation_metrics["generation_topk_exact"]),
                         "generation_raw_exact": float(generation_metrics["generation_raw_exact"]),
                         "generation_invalid_top1_rate": float(generation_metrics["generation_invalid_top1_rate"]),
+                        "generation_eos_hit_rate": float(generation_metrics["generation_eos_hit_rate"]),
+                        "generation_hit_max_len_rate": float(generation_metrics["generation_hit_max_len_rate"]),
+                        "generation_pred_len_avg": float(generation_metrics["generation_pred_len_avg"]),
+                        "generation_pred_len_p95": float(generation_metrics["generation_pred_len_p95"]),
                     }
                 )
                 print(f"epoch={epoch} generation_exact={generation_metrics['generation_exact']:.6f}")
@@ -644,6 +697,10 @@ def main():
                     print(f"epoch={epoch} generation_topk_exact={generation_metrics['generation_topk_exact']:.6f}")
                 print(f"epoch={epoch} generation_raw_exact={generation_metrics['generation_raw_exact']:.6f}")
                 print(f"epoch={epoch} generation_invalid_top1_rate={generation_metrics['generation_invalid_top1_rate']:.6f}")
+                print(f"epoch={epoch} generation_eos_hit_rate={generation_metrics['generation_eos_hit_rate']:.6f}")
+                print(f"epoch={epoch} generation_hit_max_len_rate={generation_metrics['generation_hit_max_len_rate']:.6f}")
+                print(f"epoch={epoch} generation_pred_len_avg={generation_metrics['generation_pred_len_avg']:.6f}")
+                print(f"epoch={epoch} generation_pred_len_p95={generation_metrics['generation_pred_len_p95']:.2f}")
                 for example in preview_examples:
                     example_row = {"epoch": epoch, **example}
                     append_csv_row(generation_examples_path, ["epoch", *GENERATION_EXAMPLE_FIELDS], example_row)

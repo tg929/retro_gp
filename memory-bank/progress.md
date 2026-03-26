@@ -258,6 +258,35 @@
   `ce_loss = 1.281135`
   `align_loss = 0.296884`
   `seq_align_loss = 0.986955`
+
+## 2026-03-26
+
+### 本次动作
+
+- 在 `model/train_retrosynthesis_repa.py` 的参数分组里，把 `token_projector.` 明确加入 fast lr 组，避免 token-level projector 落到 slow lr。
+- 在 `model/train_retrosynthesis.py` 的生成评估里新增塌缩诊断指标：
+  `generation_eos_hit_rate`
+  `generation_hit_max_len_rate`
+  `generation_pred_len_avg`
+  `generation_pred_len_p95`
+  并把这几个字段打通到 `eval_metrics.csv`、控制台日志和 `metrics.json` 消费路径。
+- 在 `model/decoder/model.py` 的 `beam_search_generate()` 增加 `legacy_token_penalty` 开关，默认关闭历史的 token id 硬惩罚；历史行为可显式开启。
+- 在 `model/retro_model.py` 增加 `legacy_beam_token_penalty` 透传参数，并在
+  `model/evaluate_checkpoint.py`
+  `model/evaluate_repa_checkpoint.py`
+  `model/train_retrosynthesis.py`
+  三个入口增加 `--generation-legacy-beam-token-penalty` CLI 开关。
+
+### 验证
+
+- 运行
+  `python -m py_compile model/decoder/model.py model/retro_model.py model/train_retrosynthesis.py model/evaluate_checkpoint.py model/evaluate_repa_checkpoint.py`
+  语法检查通过。
+
+### 当前判断
+
+- 现在可以直接用新增指标判断“生成塌缩是偏短停（低长度）还是偏长拖（打满上限）”，不再只看 `generation_exact`。
+- beam 的历史硬惩罚已被开关化，后续可以在同一 checkpoint 上做“清理前/清理后”对照评估。
   `tok_align_loss = 0.990942`
   `eval_loss = 1.823502`
   `eval_ce_loss = 1.563218`

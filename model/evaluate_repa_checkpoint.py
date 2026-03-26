@@ -33,6 +33,7 @@ def parse_args():
     parser.add_argument("--generation-eval-samples", type=int, default=16)
     parser.add_argument("--generation-max-new-tokens", type=int, default=128)
     parser.add_argument("--generation-beam-width", type=int, default=1)
+    parser.add_argument("--generation-legacy-beam-token-penalty", action="store_true")
     parser.add_argument("--preview-samples", type=int, default=8)
     parser.add_argument("--amp-dtype", choices=["fp32", "fp16", "bf16"], default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -76,6 +77,7 @@ def main():
         args.generation_eval_samples,
         args.generation_max_new_tokens,
         args.generation_beam_width,
+        args.generation_legacy_beam_token_penalty,
     )
     metrics.update(generation_metrics)
 
@@ -106,6 +108,10 @@ def main():
         print(f"generation_topk_exact={generation_metrics['generation_topk_exact']:.6f}")
     print(f"generation_raw_exact={generation_metrics['generation_raw_exact']:.6f}")
     print(f"generation_invalid_top1_rate={generation_metrics['generation_invalid_top1_rate']:.6f}")
+    print(f"generation_eos_hit_rate={generation_metrics['generation_eos_hit_rate']:.6f}")
+    print(f"generation_hit_max_len_rate={generation_metrics['generation_hit_max_len_rate']:.6f}")
+    print(f"generation_pred_len_avg={generation_metrics['generation_pred_len_avg']:.6f}")
+    print(f"generation_pred_len_p95={generation_metrics['generation_pred_len_p95']:.2f}")
     for example in examples[:args.preview_samples]:
         print(f"preview_match={example['match']}")
         print(f"preview_product={example['product']}")

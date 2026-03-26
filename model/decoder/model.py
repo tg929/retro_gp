@@ -395,7 +395,7 @@ class GPT(nn.Module):
                              temperature=0.0, top_k=None,  rp=1.0, stream=True,
                              kv_cache=True, is_simulation=False, linker=False,
                              encoder_hidden_states=None, encoder_attention_mask=None,
-                             return_all=False):
+                             return_all=False, legacy_token_penalty=False):
         if idx.size(0) != 1:
             raise ValueError("beam_search_generate currently supports batch_size=1")
 
@@ -405,6 +405,11 @@ class GPT(nn.Module):
 
         beam = [(0.0, idx, False)]
         eos_id = tokenizer.eos_token_id
+        legacy_penalty_ids = set()
+        for token in ("2", "3", "4"):
+            token_id = tokenizer.convert_tokens_to_ids(token)
+            if token_id is not None and token_id >= 0:
+                legacy_penalty_ids.add(int(token_id))
         candidates = list(beam)
         input_length = idx.shape[1]
 
@@ -439,7 +444,7 @@ class GPT(nn.Module):
                 for i in range(top_count):
                     new_score = score + top_probs[0, i].item()
                     new_token = top_indices[0, i].view(1, 1)
-                    if ((new_token == 21).sum() + (new_token == 26).sum() + (new_token == 32).sum() != 0):
+                    if legacy_token_penalty and new_token.item() in legacy_penalty_ids:
                         new_score = -200000
                     new_seq = torch.cat([seq, new_token], dim=1)
                     new_ended = False
