@@ -379,106 +379,96 @@ class GPT(nn.Module):
 
         return x, mask
 
+    def _finalize_beam_candidates(self, candidates, input_length, beam_width, linker=False):
+        reranked = []
+        for score, seq, ended in candidates:
+            adjusted_score = score - (seq.shape[1] - input_length) * 0.2
+            if linker:
+                star_num = int((seq == 256).sum().item())
+                if star_num != 4:
+                    adjusted_score -= 2000000
+            reranked.append((adjusted_score, seq, ended))
+        return sorted(reranked, key=lambda x: -x[0])[:beam_width]
+
     @torch.inference_mode()
     def beam_search_generate(self, idx, tokenizer, max_new_tokens, beam_width=5,
                              temperature=0.0, top_k=None,  rp=1.0, stream=True,
                              kv_cache=True, is_simulation=False, linker=False,
-                             encoder_hidden_states=None, encoder_attention_mask=None):
-        # 初始化beam：每个候选保存 (score, sequence, ended)
-        beam = [(0.0, idx, False)]  # 初始beam包含输入序列
+                             encoder_hidden_states=None, encoder_attention_mask=None,
+                             return_all=False):
+        if idx.size(0) != 1:
+            raise ValueError("beam_search_generate currently supports batch_size=1")
+
+        # The decoder caches are shared across branches, so beam search must
+        # recompute each branch from its full prefix to keep scores correct.
+        kv_cache = False
+
+        beam = [(0.0, idx, False)]
         eos_id = tokenizer.eos_token_id
-        init_inference = True
-        for step in range(max_new_tokens):
+        candidates = list(beam)
+        input_length = idx.shape[1]
+
+        for _ in range(max_new_tokens):
             candidates = []
             for score, seq, ended in beam:
                 if ended:
                     candidates.append((score, seq, ended))
                     continue
 
-                if init_inference or not kv_cache:
-                    inference_res, init_inference = self(
-                        seq,
-                        tokenizer,
-                        kv_cache=kv_cache,
-                        encoder_hidden_states=encoder_hidden_states,
-                        encoder_attention_mask=encoder_attention_mask,
-                    ), False
-                else:
-                    # 取最后一个token进行推理
-                    last_token = seq[:, -1:]
-                    inference_res = self(
-                        last_token,
-                        tokenizer,
-                        kv_cache=True,
-                        current_idx=seq.shape[1] - 1,
-                        encoder_hidden_states=encoder_hidden_states,
-                        encoder_attention_mask=encoder_attention_mask,
-                    )
-
-                logits, _, _ = inference_res
+                logits, _, _ = self(
+                    seq,
+                    tokenizer,
+                    kv_cache=kv_cache,
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=encoder_attention_mask,
+                )
                 logits = logits[:, -1, :]
 
-                # 应用重复惩罚
                 for token in set(seq.tolist()[0]):
                     logits[0, token] /= rp
 
-                # 计算log概率
                 log_probs = F.log_softmax(logits, dim=-1)
                 if temperature != 0:
                     log_probs /= temperature
                 if top_k is not None:
                     top_vals, _ = torch.topk(log_probs, min(top_k, logits.size(-1)))
-                    log_probs[log_probs < top_vals.min()] = -float('inf')
+                    log_probs[log_probs < top_vals.min()] = -float("inf")
 
-                # 生成候选
-                top_probs, top_indices = torch.topk(log_probs, beam_width)
-                for i in range(beam_width):
+                top_count = min(beam_width, log_probs.size(-1))
+                top_probs, top_indices = torch.topk(log_probs, top_count)
+                for i in range(top_count):
                     new_score = score + top_probs[0, i].item()
                     new_token = top_indices[0, i].view(1, 1)
-                    if ((new_token == 21).sum() + (new_token == 26).sum() + (new_token == 32).sum() != 0): # ?
+                    if ((new_token == 21).sum() + (new_token == 26).sum() + (new_token == 32).sum() != 0):
                         new_score = -200000
                     new_seq = torch.cat([seq, new_token], dim=1)
                     new_ended = False
                     if linker:
                         if new_token.item() == tokenizer.sep_token_id:
                             new_ended = True
-                            star_num = (new_seq == 256).sum()
-                            left_num = (seq == 17).sum()
-                            right_num = (seq == 18).sum()
-                            if (star_num != 4):
+                            star_num = int((new_seq == 256).sum().item())
+                            left_num = int((seq == 17).sum().item())
+                            right_num = int((seq == 18).sum().item())
+                            if star_num != 4:
                                 new_score = -20000000
-                            if (left_num != right_num):
+                            if left_num != right_num:
                                 new_score = -20000000
                         elif new_token.item() == eos_id:
                             new_ended = True
                             new_score = -20000000
-                    else:
-                        if new_token.item() == eos_id:
-                            new_ended = True
+                    elif new_token.item() == eos_id:
+                        new_ended = True
                     candidates.append((new_score, new_seq, new_ended))
 
-            # 选择top beam_width候选
             beam = sorted(candidates, key=lambda x: -x[0])[:beam_width]
-
-            # 检查是否所有候选都结束
-            if all(x[2] for x in beam):
+            if all(ended for _, _, ended in beam):
                 break
 
-        for i in range(len(candidates)):
-            frag = candidates[i][1]
-            star_num = (frag == 256).sum()
-            candidates[i] = (candidates[i][0] - (len(frag) - len(idx)) * 0.2, frag, candidates[i][2])
-            if linker:
-                if (star_num != 4):
-                    candidates[i] = (candidates[i][0] - 2000000, frag, candidates[i][2])
-
-        beam = sorted(candidates, key=lambda x: -x[0])[:beam_width]
-
-        # ans = []
-        # for i in range(min(100, beam_width)):
-        #     ans.append(beam[i][1][:, idx.shape[1]:])
-        ans = beam[0][1][:, idx.shape[1]:]
-        yield ans
+        beam = self._finalize_beam_candidates(candidates, input_length, beam_width, linker=linker)
+        if return_all:
+            yield [candidate[1][:, input_length:] for candidate in beam]
+        else:
+            yield beam[0][1][:, input_length:]
 
 
 

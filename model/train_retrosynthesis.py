@@ -1,12 +1,45 @@
 import argparse
 import csv
 import json
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader, Dataset
 
 from retro_model import RetrosynthesisModel
+from smiles_eval import canonicalize_precursor_set
+
+
+GENERATION_EXAMPLE_FIELDS = [
+    "sample_idx",
+    "match",
+    "match_raw",
+    "match_topk",
+    "best_match_rank",
+    "decoder_input",
+    "product",
+    "target",
+    "target_canonical",
+    "pred",
+    "pred_canonical",
+    "beam_preds",
+    "beam_preds_canonical",
+]
+
+
+def get_eval_metric_fields(include_generation=True):
+    fields = ["epoch", "global_step", "eval_loss"]
+    if include_generation:
+        fields.extend(
+            [
+                "generation_exact",
+                "generation_topk_exact",
+                "generation_raw_exact",
+                "generation_invalid_top1_rate",
+            ]
+        )
+    return fields
 
 
 class ReactionDataset(Dataset):
@@ -166,16 +199,47 @@ def decode_tokens(tokenizer, token_ids):
     return text
 
 
-def evaluate_loss(model, dataloader, device, max_batches=None):
+def decode_prediction_sequences(tokenizer, sequences):
+    decoded = []
+    for seq in sequences:
+        token_ids = seq[0].tolist() if seq.dim() == 2 else seq.tolist()
+        decoded.append(decode_tokens(tokenizer, token_ids))
+    return decoded
+
+
+def get_eval_autocast_context(device, amp_dtype):
+    if device.type != "cuda" or amp_dtype in (None, "fp32"):
+        return nullcontext()
+
+    dtype_map = {
+        "fp16": torch.float16,
+        "bf16": torch.bfloat16,
+    }
+    if amp_dtype not in dtype_map:
+        raise ValueError(f"unsupported eval amp dtype: {amp_dtype}")
+    return torch.autocast(device_type="cuda", dtype=dtype_map[amp_dtype])
+
+
+def default_eval_amp_dtype(device):
+    if device.type != "cuda":
+        return "fp32"
+    if torch.cuda.is_bf16_supported():
+        return "bf16"
+    return "fp16"
+
+
+def evaluate_loss(model, dataloader, device, max_batches=None, amp_dtype=None):
     model.eval()
     total_loss = 0.0
     total_batches = 0
+    amp_dtype = default_eval_amp_dtype(device) if amp_dtype is None else amp_dtype
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
             if max_batches is not None and batch_idx >= max_batches:
                 break
             batch = move_batch(batch, device)
-            _, loss, _ = model(**batch)
+            with get_eval_autocast_context(device, amp_dtype):
+                _, loss, _ = model(**batch)
             total_loss += loss.item()
             total_batches += 1
     model.train()
@@ -184,7 +248,10 @@ def evaluate_loss(model, dataloader, device, max_batches=None):
 
 def evaluate_generation(model, dataset, collator, device, sample_count, max_new_tokens, beam_width):
     total = min(sample_count, len(dataset))
-    matches = 0
+    raw_matches = 0
+    top1_matches = 0
+    topk_matches = 0
+    invalid_top1 = 0
     examples = []
 
     model.eval()
@@ -193,31 +260,66 @@ def evaluate_generation(model, dataset, collator, device, sample_count, max_new_
             item = dataset[idx]
             batch = collator([item])
             batch = move_batch(batch, device)
-            pred_ids = model.generate(
+            pred_output = model.generate(
                 batch["product_input_ids"],
                 batch["product_attention_mask"],
                 max_new_tokens=max_new_tokens,
                 temperature=0.0,
                 top_k=None,
                 beam_width=beam_width,
+                return_all_beams=beam_width > 1,
             )
-            pred = decode_tokens(model.decoder_tokenizer, pred_ids[0].tolist())
+            pred_ids = pred_output if isinstance(pred_output, list) else [pred_output]
+            beam_preds = decode_prediction_sequences(model.decoder_tokenizer, pred_ids)
+            pred = beam_preds[0] if beam_preds else ""
             target = item["reactants"].replace(" ", "")
             product = item["product"].replace(" ", "")
-            match = pred == target
-            matches += int(match)
+            target_canonical = canonicalize_precursor_set(target) or target
+            beam_preds_canonical = [canonicalize_precursor_set(candidate) for candidate in beam_preds]
+            raw_match = pred == target
+            top1_canonical = beam_preds_canonical[0] if beam_preds_canonical else None
+            canonical_match = top1_canonical == target_canonical
+            best_match_rank = ""
+            for rank, candidate_canonical in enumerate(beam_preds_canonical, start=1):
+                if candidate_canonical == target_canonical:
+                    best_match_rank = rank
+                    break
+
+            raw_matches += int(raw_match)
+            top1_matches += int(canonical_match)
+            topk_matches += int(best_match_rank != "")
+            invalid_top1 += int(top1_canonical is None)
             examples.append(
                 {
                     "sample_idx": idx,
-                    "match": int(match),
+                    "match": int(canonical_match),
+                    "match_raw": int(raw_match),
+                    "match_topk": int(best_match_rank != ""),
+                    "best_match_rank": best_match_rank,
                     "decoder_input": model.decoder_tokenizer.bos_token,
                     "product": product,
                     "target": target,
+                    "target_canonical": target_canonical,
                     "pred": pred,
+                    "pred_canonical": top1_canonical or "",
+                    "beam_preds": json.dumps(beam_preds, ensure_ascii=False),
+                    "beam_preds_canonical": json.dumps(
+                        [candidate or "" for candidate in beam_preds_canonical],
+                        ensure_ascii=False,
+                    ),
                 }
             )
     model.train()
-    return matches / max(total, 1), examples
+    denom = max(total, 1)
+    generation_metrics = {
+        "generation_exact": top1_matches / denom,
+        "generation_topk_exact": topk_matches / denom,
+        "generation_raw_exact": raw_matches / denom,
+        "generation_invalid_top1_rate": invalid_top1 / denom,
+        "generation_eval_samples": total,
+        "generation_beam_width": beam_width,
+    }
+    return generation_metrics, examples
 
 
 def count_trainable_params(model):
@@ -423,12 +525,9 @@ def main():
     if args.resume_from is None or not train_loss_path.exists():
         init_csv(train_loss_path, ["epoch", "global_step", "train_loss"])
     if not args.disable_eval and (args.resume_from is None or not eval_metrics_path.exists()):
-        init_csv(eval_metrics_path, ["epoch", "global_step", "eval_loss", "generation_exact"])
+        init_csv(eval_metrics_path, get_eval_metric_fields(include_generation=True))
     if not args.disable_eval and (args.resume_from is None or not generation_examples_path.exists()):
-        init_csv(
-            generation_examples_path,
-            ["epoch", "sample_idx", "match", "decoder_input", "product", "target", "pred"],
-        )
+        init_csv(generation_examples_path, ["epoch", *GENERATION_EXAMPLE_FIELDS])
     save_json(results_dir / "run_config.json", {**vars(args), "trainable_params": trainable_params})
 
     best_eval = None
@@ -514,13 +613,16 @@ def main():
                 "global_step": global_step,
                 "eval_loss": float(eval_loss),
                 "generation_exact": "",
+                "generation_topk_exact": "",
+                "generation_raw_exact": "",
+                "generation_invalid_top1_rate": "",
             }
             print(f"epoch={epoch} eval_loss={eval_loss:.6f}")
 
-            generation_exact = None
+            generation_metrics = None
             preview_examples = []
             if args.generation_eval_samples > 0:
-                generation_exact, preview_examples = evaluate_generation(
+                generation_metrics, preview_examples = evaluate_generation(
                     model,
                     eval_dataset,
                     collator,
@@ -529,27 +631,31 @@ def main():
                     args.generation_max_new_tokens,
                     args.generation_beam_width,
                 )
-                eval_row["generation_exact"] = float(generation_exact)
-                print(f"epoch={epoch} generation_exact={generation_exact:.6f}")
+                eval_row.update(
+                    {
+                        "generation_exact": float(generation_metrics["generation_exact"]),
+                        "generation_topk_exact": float(generation_metrics["generation_topk_exact"]),
+                        "generation_raw_exact": float(generation_metrics["generation_raw_exact"]),
+                        "generation_invalid_top1_rate": float(generation_metrics["generation_invalid_top1_rate"]),
+                    }
+                )
+                print(f"epoch={epoch} generation_exact={generation_metrics['generation_exact']:.6f}")
+                if args.generation_beam_width > 1:
+                    print(f"epoch={epoch} generation_topk_exact={generation_metrics['generation_topk_exact']:.6f}")
+                print(f"epoch={epoch} generation_raw_exact={generation_metrics['generation_raw_exact']:.6f}")
+                print(f"epoch={epoch} generation_invalid_top1_rate={generation_metrics['generation_invalid_top1_rate']:.6f}")
                 for example in preview_examples:
                     example_row = {"epoch": epoch, **example}
-                    append_csv_row(
-                        generation_examples_path,
-                        ["epoch", "sample_idx", "match", "decoder_input", "product", "target", "pred"],
-                        example_row,
-                    )
+                    append_csv_row(generation_examples_path, ["epoch", *GENERATION_EXAMPLE_FIELDS], example_row)
                 for example in preview_examples[:args.preview_samples]:
                     print(f"preview_match={example['match']}")
                     print(f"preview_product={example['product']}")
                     print(f"preview_target={example['target']}")
                     print(f"preview_pred={example['pred']}")
+                    print(f"preview_pred_canonical={example['pred_canonical']}")
 
             eval_history.append(eval_row)
-            append_csv_row(
-                eval_metrics_path,
-                ["epoch", "global_step", "eval_loss", "generation_exact"],
-                eval_row,
-            )
+            append_csv_row(eval_metrics_path, get_eval_metric_fields(include_generation=True), eval_row)
             save_loss_curve(train_history, eval_history, loss_curve_path)
 
             if best_eval is None or eval_loss < best_eval:
@@ -561,7 +667,10 @@ def main():
                         "epoch": epoch,
                         "global_step": global_step,
                         "eval_loss": eval_loss,
-                        "generation_exact": generation_exact,
+                        "generation_exact": generation_metrics["generation_exact"] if generation_metrics is not None else None,
+                        "generation_topk_exact": (
+                            generation_metrics["generation_topk_exact"] if generation_metrics is not None else None
+                        ),
                         "stage": args.stage,
                     },
                     save_dir / "best.pt",

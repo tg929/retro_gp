@@ -225,7 +225,8 @@ class RetrosynthesisModel(nn.Module):
 
     @torch.inference_mode()
     def generate(self, product_input_ids, product_attention_mask, decoder_input_ids=None,
-                 max_new_tokens=128, temperature=0.0, top_k=None, beam_width=1):
+                 max_new_tokens=128, temperature=0.0, top_k=None, beam_width=1,
+                 return_all_beams=False):
         memory = self.encode_product(product_input_ids, product_attention_mask)
         if decoder_input_ids is None:
             decoder_input_ids = torch.full(
@@ -247,10 +248,11 @@ class RetrosynthesisModel(nn.Module):
                     stream=False,
                     encoder_hidden_states=memory,
                     encoder_attention_mask=product_attention_mask,
+                    return_all=return_all_beams,
                 )
             )
 
-        return next(
+        output = next(
             self.decoder.generate(
                 decoder_input_ids,
                 self.decoder_tokenizer,
@@ -262,6 +264,9 @@ class RetrosynthesisModel(nn.Module):
                 encoder_attention_mask=product_attention_mask,
             )
         )
+        if return_all_beams:
+            return [output]
+        return output
 
 
 def masked_mean_pool(hidden_states, mask):
