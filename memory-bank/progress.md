@@ -1172,3 +1172,47 @@
   的外部 Python 进程，占用下这条 1-step smoke 仍然能跑通。
 - 后续正式训练建议默认带：
   `--train-amp-dtype bf16`
+
+## 2026-03-26 Remove Wrong-Product Contrastive
+
+### 本次动作
+
+- 按当前 retrosynthesis 主线需要，移除了
+  `wrong-product contrastive`
+  这条扩展分支，避免主训练目标继续混入一套额外的条件对比约束。
+- 在
+  `model/retro_model.py`
+  中删除了
+  `forward_repa()`
+  的
+  `wrong_product_weight`
+  和
+  `wrong_product_margin`
+  参数，以及对应的
+  `contrastive_loss / wrong_ce_loss / wrong_ce_gap`
+  计算与返回值。
+- 在
+  `model/train_retrosynthesis_repa.py`
+  中同步删除了相关 CLI 参数、训练日志列、eval 指标列和终端输出字段。
+- 在
+  `model/evaluate_repa_checkpoint.py`
+  中同步删除了对应 CLI 参数和打印指标，保证训练/评估接口与模型实现一致。
+
+### 验证
+
+- 用
+  `python -m py_compile model/retro_model.py model/train_retrosynthesis_repa.py model/evaluate_repa_checkpoint.py`
+  做静态语法检查。
+- 用
+  `rg -n "wrong_product|contrastive_loss|wrong_ce_loss|wrong_ce_gap" model memory-bank -S`
+  复查源码，确认上述逻辑已从主代码路径移除；保留的匹配仅来自历史结果产物目录。
+
+### 当前判断
+
+- 现在的 REPA 风格主线重新收敛到：
+  `CE + sequence-level alignment + token-level alignment`
+  不再额外混入 wrong-product 对比项。
+- 这样更利于后续单独判断：
+  当前条件控制不足，到底来自
+  cross-attn / alignment
+  本身，还是来自额外对比损失带来的行为变化。

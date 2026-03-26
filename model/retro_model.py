@@ -108,30 +108,6 @@ class RetrosynthesisModel(nn.Module):
         weights[targets == self.decoder_tokenizer.pad_token_id] = 0.0
         return weights
 
-    def compute_weighted_ce_from_logits(self, logits, targets, loss_weights, reduction="mean"):
-        flat_targets = targets.reshape(-1)
-        token_loss = F.cross_entropy(
-            logits.reshape(-1, logits.size(-1)),
-            flat_targets,
-            ignore_index=self.decoder_tokenizer.pad_token_id,
-            reduction="none",
-        ).view_as(targets)
-
-        valid = targets.ne(self.decoder_tokenizer.pad_token_id)
-        weights = loss_weights.to(token_loss.dtype)
-
-        if reduction == "mean":
-            norm = weights[valid].sum().clamp_min(1.0)
-            return (token_loss[valid] * weights[valid]).sum() / norm
-
-        if reduction == "per_sample":
-            weighted_loss = token_loss * weights
-            numer = weighted_loss.sum(dim=1)
-            denom = weights.masked_fill(~valid, 0.0).sum(dim=1).clamp_min(1.0)
-            return numer / denom
-
-        raise ValueError(f"unsupported CE reduction: {reduction}")
-
     def pool_encoder_states(self, hidden_states, input_ids, attention_mask):
         mask = attention_mask.bool()
         cls_id = self.encoder_tokenizer.cls_token_id
@@ -198,8 +174,6 @@ class RetrosynthesisModel(nn.Module):
         seq_align_weight=0.1,
         tok_align_weight=0.2,
         eos_weight=3.0,
-        wrong_product_weight=0.0,
-        wrong_product_margin=0.2,
     ):
         memory = self.encode_product(product_input_ids, product_attention_mask)
         loss_weights = self.build_token_loss_weights(targets, eos_weight)
@@ -237,37 +211,7 @@ class RetrosynthesisModel(nn.Module):
         tok_align_loss = 1.0 - F.cosine_similarity(projected_tokens, teacher_tokens.detach(), dim=-1).mean()
 
         align_loss = seq_align_weight * seq_align_loss + tok_align_weight * tok_align_loss
-        contrastive_loss = logits.new_zeros(())
-        wrong_ce_loss = logits.new_zeros(())
-        wrong_ce_gap = logits.new_zeros(())
-
-        if wrong_product_weight > 0.0 and product_input_ids.size(0) > 1:
-            # Use an in-batch rolled product as a cheap negative condition.
-            wrong_memory = memory.roll(shifts=1, dims=0)
-            wrong_attention_mask = product_attention_mask.roll(shifts=1, dims=0)
-            wrong_logits, _, _ = self.decoder(
-                reactant_input_ids,
-                self.decoder_tokenizer,
-                encoder_hidden_states=wrong_memory,
-                encoder_attention_mask=wrong_attention_mask,
-            )
-            correct_ce_per_sample = self.compute_weighted_ce_from_logits(
-                logits,
-                targets,
-                loss_weights,
-                reduction="per_sample",
-            )
-            wrong_ce_per_sample = self.compute_weighted_ce_from_logits(
-                wrong_logits,
-                targets,
-                loss_weights,
-                reduction="per_sample",
-            )
-            wrong_ce_loss = wrong_ce_per_sample.mean()
-            wrong_ce_gap = (wrong_ce_per_sample - correct_ce_per_sample).mean()
-            contrastive_loss = (wrong_product_margin + correct_ce_per_sample - wrong_ce_per_sample).clamp_min(0.0).mean()
-
-        total_loss = ce_loss + align_loss + wrong_product_weight * contrastive_loss
+        total_loss = ce_loss + align_loss
 
         return {
             "logits": logits,
@@ -276,9 +220,6 @@ class RetrosynthesisModel(nn.Module):
             "align_loss": align_loss,
             "seq_align_loss": seq_align_loss,
             "tok_align_loss": tok_align_loss,
-            "contrastive_loss": contrastive_loss,
-            "wrong_ce_loss": wrong_ce_loss,
-            "wrong_ce_gap": wrong_ce_gap,
             "attn_maps": attn_maps,
         }
 

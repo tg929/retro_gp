@@ -234,16 +234,13 @@ def count_trainable_params(model):
 
 
 def evaluate_repa_loss(model, dataloader, device, seq_align_weight, tok_align_weight, eos_weight, max_batches=None,
-                       amp_dtype=None, wrong_product_weight=0.0, wrong_product_margin=0.2):
+                       amp_dtype=None):
     model.eval()
     total_loss = 0.0
     total_ce = 0.0
     total_align = 0.0
     total_seq_align = 0.0
     total_tok_align = 0.0
-    total_contrastive = 0.0
-    total_wrong_ce = 0.0
-    total_wrong_gap = 0.0
     total_batches = 0
     amp_dtype = default_eval_amp_dtype(device) if amp_dtype is None else amp_dtype
     with torch.no_grad():
@@ -257,17 +254,12 @@ def evaluate_repa_loss(model, dataloader, device, seq_align_weight, tok_align_we
                     seq_align_weight=seq_align_weight,
                     tok_align_weight=tok_align_weight,
                     eos_weight=eos_weight,
-                    wrong_product_weight=wrong_product_weight,
-                    wrong_product_margin=wrong_product_margin,
                 )
             total_loss += outputs["loss"].item()
             total_ce += outputs["ce_loss"].item()
             total_align += outputs["align_loss"].item()
             total_seq_align += outputs["seq_align_loss"].item()
             total_tok_align += outputs["tok_align_loss"].item()
-            total_contrastive += outputs["contrastive_loss"].item()
-            total_wrong_ce += outputs["wrong_ce_loss"].item()
-            total_wrong_gap += outputs["wrong_ce_gap"].item()
             total_batches += 1
     model.train()
     denom = max(total_batches, 1)
@@ -277,9 +269,6 @@ def evaluate_repa_loss(model, dataloader, device, seq_align_weight, tok_align_we
         "eval_align_loss": total_align / denom,
         "eval_seq_align_loss": total_seq_align / denom,
         "eval_tok_align_loss": total_tok_align / denom,
-        "eval_contrastive_loss": total_contrastive / denom,
-        "eval_wrong_ce_loss": total_wrong_ce / denom,
-        "eval_wrong_ce_gap": total_wrong_gap / denom,
     }
 
 
@@ -340,8 +329,6 @@ def parse_args():
     parser.add_argument("--seq-align-weight", type=float, default=0.1)
     parser.add_argument("--tok-align-weight", type=float, default=0.2)
     parser.add_argument("--eos-weight", type=float, default=3.0)
-    parser.add_argument("--wrong-product-weight", type=float, default=0.0)
-    parser.add_argument("--wrong-product-margin", type=float, default=0.2)
     parser.add_argument("--top-decoder-blocks", type=int, default=4)
     parser.add_argument("--max-product-len", type=int, default=128)
     parser.add_argument("--max-reactants-len", type=int, default=128)
@@ -432,9 +419,6 @@ def main():
                 "align_loss",
                 "seq_align_loss",
                 "tok_align_loss",
-                "contrastive_loss",
-                "wrong_ce_loss",
-                "wrong_ce_gap",
             ],
         )
     if args.eval_csv is not None and (args.resume_from is None or not eval_metrics_path.exists()):
@@ -448,9 +432,6 @@ def main():
                 "eval_align_loss",
                 "eval_seq_align_loss",
                 "eval_tok_align_loss",
-                "eval_contrastive_loss",
-                "eval_wrong_ce_loss",
-                "eval_wrong_ce_gap",
             ],
         )
 
@@ -485,9 +466,6 @@ def main():
         accum_align = 0.0
         accum_seq_align = 0.0
         accum_tok_align = 0.0
-        accum_contrastive = 0.0
-        accum_wrong_ce = 0.0
-        accum_wrong_gap = 0.0
         accum_count = 0
 
         for batch_idx, batch in enumerate(train_loader):
@@ -501,8 +479,6 @@ def main():
                     seq_align_weight=args.seq_align_weight,
                     tok_align_weight=args.tok_align_weight,
                     eos_weight=args.eos_weight,
-                    wrong_product_weight=args.wrong_product_weight,
-                    wrong_product_margin=args.wrong_product_margin,
                 )
             scaled_loss = outputs["loss"] / args.grad_accumulation
             if scaler.is_enabled():
@@ -514,9 +490,6 @@ def main():
             accum_align += outputs["align_loss"].item()
             accum_seq_align += outputs["seq_align_loss"].item()
             accum_tok_align += outputs["tok_align_loss"].item()
-            accum_contrastive += outputs["contrastive_loss"].item()
-            accum_wrong_ce += outputs["wrong_ce_loss"].item()
-            accum_wrong_gap += outputs["wrong_ce_gap"].item()
             accum_count += 1
 
             should_step = accum_count == args.grad_accumulation or batch_idx == len(train_loader) - 1
@@ -543,9 +516,6 @@ def main():
                 "align_loss": accum_align / accum_count,
                 "seq_align_loss": accum_seq_align / accum_count,
                 "tok_align_loss": accum_tok_align / accum_count,
-                "contrastive_loss": accum_contrastive / accum_count,
-                "wrong_ce_loss": accum_wrong_ce / accum_count,
-                "wrong_ce_gap": accum_wrong_gap / accum_count,
             }
             train_history.append(train_row)
             last_train_loss = float(train_row["train_loss"])
@@ -559,9 +529,6 @@ def main():
                     "align_loss",
                     "seq_align_loss",
                     "tok_align_loss",
-                    "contrastive_loss",
-                    "wrong_ce_loss",
-                    "wrong_ce_gap",
                 ],
                 train_row,
             )
@@ -571,10 +538,7 @@ def main():
                 f"ce_loss={train_row['ce_loss']:.6f} "
                 f"align_loss={train_row['align_loss']:.6f} "
                 f"seq_align_loss={train_row['seq_align_loss']:.6f} "
-                f"tok_align_loss={train_row['tok_align_loss']:.6f} "
-                f"contrastive_loss={train_row['contrastive_loss']:.6f} "
-                f"wrong_ce_loss={train_row['wrong_ce_loss']:.6f} "
-                f"wrong_ce_gap={train_row['wrong_ce_gap']:.6f}"
+                f"tok_align_loss={train_row['tok_align_loss']:.6f}"
             )
 
             if args.save_every_steps is not None and global_step % args.save_every_steps == 0:
@@ -611,9 +575,6 @@ def main():
             accum_align = 0.0
             accum_seq_align = 0.0
             accum_tok_align = 0.0
-            accum_contrastive = 0.0
-            accum_wrong_ce = 0.0
-            accum_wrong_gap = 0.0
             accum_count = 0
 
             if args.max_train_steps is not None and global_step >= args.max_train_steps:
@@ -632,8 +593,6 @@ def main():
                     tok_align_weight=args.tok_align_weight,
                     eos_weight=args.eos_weight,
                     max_batches=args.max_eval_batches,
-                    wrong_product_weight=args.wrong_product_weight,
-                    wrong_product_margin=args.wrong_product_margin,
                 )
             )
             eval_history.append(eval_row)
@@ -647,9 +606,6 @@ def main():
                     "eval_align_loss",
                     "eval_seq_align_loss",
                     "eval_tok_align_loss",
-                    "eval_contrastive_loss",
-                    "eval_wrong_ce_loss",
-                    "eval_wrong_ce_gap",
                 ],
                 eval_row,
             )
@@ -659,10 +615,7 @@ def main():
                 f"eval_ce_loss={eval_row['eval_ce_loss']:.6f} "
                 f"eval_align_loss={eval_row['eval_align_loss']:.6f} "
                 f"eval_seq_align_loss={eval_row['eval_seq_align_loss']:.6f} "
-                f"eval_tok_align_loss={eval_row['eval_tok_align_loss']:.6f} "
-                f"eval_contrastive_loss={eval_row['eval_contrastive_loss']:.6f} "
-                f"eval_wrong_ce_loss={eval_row['eval_wrong_ce_loss']:.6f} "
-                f"eval_wrong_ce_gap={eval_row['eval_wrong_ce_gap']:.6f}"
+                f"eval_tok_align_loss={eval_row['eval_tok_align_loss']:.6f}"
             )
 
         if args.max_train_steps is not None and global_step >= args.max_train_steps:
