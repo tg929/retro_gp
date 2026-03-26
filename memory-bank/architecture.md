@@ -64,8 +64,11 @@
 - `model/data/test.csv`: 测试集。
 - `model/RETROSYNTHESIS_PLAN.md`: 针对当前 encoder、decoder 和 USPTO-full 风格数据集的单步逆合成实施计划书。
 - `model/retro_model.py`: 当前单步逆合成组合模型；在原先 frozen encoder + aligner + cross-attention decoder 主干之外，现已加入 REPA 风格的 `sequence_projector + token_projector`、teacher reactant 编码路径和 `forward_repa()`，用于 `CE + sequence-level alignment + token-level alignment` 联合训练。当前 token-level 对齐不是简单要求 teacher/decoder token 数一致，而是先按 encoder tokenizer 对每个 SMILES token 产生的子 token 数做分组，再把 teacher 子 token 表示按组 mean pooling 后与 decoder token hidden 对齐，从而兼容 `[O-]`、`[P+]` 这类会被 encoder 再切碎的 bracket token。
-- `model/train_retrosynthesis.py`: 当前训练脚本，包含 CSV 数据集读取、collator、两阶段冻结策略、`--init-checkpoint` warm-start、`--resume-from` 断点续训、`--disable-eval` 纯训练模式，以及 `--save-every-steps` 的追加式 `model_step_XXXXXXXX.pt` 保存、`--resume-every-steps` 的 `resume_step_XXXXXXXX.pt` 保存、`latest_*` 更新和 `final_*` 写出逻辑。
-- `model/evaluate_checkpoint.py`: 独立 checkpoint 测试脚本，默认使用 `model/data/eval.csv`，可直接加载训练过程中保存的模型权重，对指定 CSV 跑 eval loss 和生成预览。
+- `model/stage12model/`: 旧版 Stage 1 / Stage 2 训练链路归档目录（只保留主干实现）。
+- `model/stage12model/train_retrosynthesis.py`: 旧版 Stage 1 / Stage 2 训练主干脚本，包含 CSV 数据集读取、collator、两阶段冻结策略、warm-start、resume、周期 checkpoint 与结果落盘。
+- `model/stage12model/evaluate_checkpoint.py`: 旧版 Stage 1 / Stage 2 checkpoint 评估主干脚本，默认使用 `model/data/eval.csv`，可对指定 CSV 计算 eval loss 和生成预览。
+- `model/train_retrosynthesis.py`: 兼容包装器入口，继续保留历史调用方式，内部转发到 `model/stage12model/train_retrosynthesis.py`，并向 REPA 代码暴露公共辅助函数。
+- `model/evaluate_checkpoint.py`: 兼容包装器入口，内部转发到 `model/stage12model/evaluate_checkpoint.py`。
 - `model/preprocess_retrosynthesis_data.py`: 新的数据预处理脚本，用 RDKit 对 `product` 和 precursor components 做 canonicalization，对 precursor components 做确定性排序，并重新生成统一 tokenization 的 CSV；输出同时保留兼容当前训练脚本的 `reactants>reagents>production` 字段，以及 `product_raw/product_canonical/product_tokens/precursor_raw/precursor_canonical_sorted/precursor_components_canonical/precursor_tokens` 等新方案训练字段。
 - `model/train_retrosynthesis_repa.py`: 新的 REPA 风格训练入口，读取预处理后的 canonicalized/sorted 数据，使用 frozen product encoder、frozen reactant teacher encoder、sequence/token projector，以及 `CE + sequence-level align + token-level align` 联合训练；当前支持分组学习率、warm-start、gradient accumulation、cosine schedule、周期 model checkpoint 和 full resume checkpoint。
 - `model/evaluate_repa_checkpoint.py`: 新的 REPA 风格评估入口，读取预处理后的 canonicalized/sorted 数据，对指定 checkpoint 计算 `eval_loss / eval_ce_loss / eval_align_loss / eval_seq_align_loss / eval_tok_align_loss`，并沿用当前 decoder 生成路径输出生成样本预览。

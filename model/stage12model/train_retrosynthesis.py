@@ -1,0 +1,776 @@
+import argparse
+import csv
+import json
+from contextlib import nullcontext
+from pathlib import Path
+import sys
+
+import torch
+from torch.utils.data import DataLoader, Dataset
+
+CURRENT_DIR = Path(__file__).resolve().parent
+MODEL_DIR = CURRENT_DIR.parent
+if str(MODEL_DIR) not in sys.path:
+    sys.path.insert(0, str(MODEL_DIR))
+
+from retro_model import RetrosynthesisModel
+from smiles_eval import canonicalize_precursor_set
+
+
+GENERATION_EXAMPLE_FIELDS = [
+    "sample_idx",
+    "match",
+    "match_raw",
+    "match_topk",
+    "best_match_rank",
+    "decoder_input",
+    "product",
+    "target",
+    "target_canonical",
+    "pred_token_len",
+    "eos_hit",
+    "hit_max_len",
+    "pred",
+    "pred_canonical",
+    "beam_preds",
+    "beam_preds_canonical",
+]
+
+
+def get_eval_metric_fields(include_generation=True):
+    fields = ["epoch", "global_step", "eval_loss"]
+    if include_generation:
+        fields.extend(
+            [
+                "generation_exact",
+                "generation_topk_exact",
+                "generation_raw_exact",
+                "generation_invalid_top1_rate",
+                "generation_eos_hit_rate",
+                "generation_hit_max_len_rate",
+                "generation_pred_len_avg",
+                "generation_pred_len_p95",
+            ]
+        )
+    return fields
+
+
+class ReactionDataset(Dataset):
+    def __init__(self, csv_path, limit=None):
+        self.rows = []
+        with open(csv_path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                reactants, product = row["reactants>reagents>production"].split(">>", 1)
+                self.rows.append((product.strip(), reactants.strip()))
+                if limit is not None and len(self.rows) >= limit:
+                    break
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, idx):
+        product, reactants = self.rows[idx]
+        return {"product": product, "reactants": reactants}
+
+
+class RetrosynthesisCollator:
+    def __init__(self, encoder_tokenizer, decoder_tokenizer, max_product_len, max_reactants_len):
+        self.encoder_tokenizer = encoder_tokenizer
+        self.decoder_tokenizer = decoder_tokenizer
+        self.max_product_len = max_product_len
+        self.max_reactants_len = max_reactants_len
+
+    def __call__(self, batch):
+        product_ids = []
+        reactant_inputs = []
+        reactant_targets = []
+
+        for item in batch:
+            product = item["product"]
+            reactants = item["reactants"].replace(" ", "")
+
+            p_ids = self.encoder_tokenizer.encode(
+                product,
+                add_special_tokens=True,
+                truncation=True,
+                max_length=self.max_product_len,
+            )
+            r_ids = self.decoder_tokenizer.encode(reactants, add_special_tokens=False)
+            r_ids = r_ids[: self.max_reactants_len - 1]
+
+            product_ids.append(p_ids)
+            reactant_inputs.append([self.decoder_tokenizer.bos_token_id] + r_ids)
+            reactant_targets.append(r_ids + [self.decoder_tokenizer.eos_token_id])
+
+        product_input_ids, product_attention_mask = pad_batch(
+            product_ids,
+            self.encoder_tokenizer.pad_token_id,
+        )
+        reactant_input_ids, _ = pad_batch(
+            reactant_inputs,
+            self.decoder_tokenizer.pad_token_id,
+        )
+        targets, _ = pad_batch(
+            reactant_targets,
+            self.decoder_tokenizer.pad_token_id,
+        )
+
+        return {
+            "product_input_ids": product_input_ids,
+            "product_attention_mask": product_attention_mask,
+            "reactant_input_ids": reactant_input_ids,
+            "targets": targets,
+        }
+
+
+def pad_batch(sequences, pad_id):
+    max_len = max(len(seq) for seq in sequences)
+    batch = torch.full((len(sequences), max_len), pad_id, dtype=torch.long)
+    mask = torch.zeros((len(sequences), max_len), dtype=torch.bool)
+    for i, seq in enumerate(sequences):
+        batch[i, :len(seq)] = torch.tensor(seq, dtype=torch.long)
+        mask[i, :len(seq)] = True
+    return batch, mask
+
+
+def build_train_loader(dataset, batch_size, collate_fn, seed, epoch):
+    generator = torch.Generator()
+    generator.manual_seed(seed + epoch)
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=collate_fn,
+        generator=generator,
+    )
+
+
+def freeze_module(module):
+    for p in module.parameters():
+        p.requires_grad = False
+
+
+def unfreeze_module(module):
+    for p in module.parameters():
+        p.requires_grad = True
+
+
+def configure_training_stage(model, stage, trainable_decoder_blocks):
+    freeze_module(model.encoder)
+    freeze_module(model.decoder)
+    unfreeze_module(model.aligner)
+    unfreeze_module(model.decoder.ln_f)
+    unfreeze_module(model.decoder.head)
+
+    for block in model.decoder.blocks:
+        if block.cross_attn is not None:
+            unfreeze_module(block.cross_attn)
+            unfreeze_module(block.ln_cross)
+
+    if stage == 2:
+        for block in list(model.decoder.blocks)[-trainable_decoder_blocks:]:
+            unfreeze_module(block.attn)
+            unfreeze_module(block.ln1)
+            unfreeze_module(block.mlp)
+            unfreeze_module(block.ln2)
+
+
+def build_optimizer(model, lr, decoder_lr=None, weight_decay=0.0):
+    params = []
+    if decoder_lr is None:
+        params = [p for p in model.parameters() if p.requires_grad]
+        return torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
+
+    fast_params = []
+    slow_params = []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if name.startswith("decoder.") and "cross_attn" not in name and "ln_cross" not in name:
+            slow_params.append(p)
+        else:
+            fast_params.append(p)
+
+    param_groups = [{"params": fast_params, "lr": lr, "weight_decay": weight_decay}]
+    if slow_params:
+        param_groups.append({"params": slow_params, "lr": decoder_lr, "weight_decay": weight_decay})
+    return torch.optim.AdamW(param_groups)
+
+
+def move_batch(batch, device):
+    return {k: v.to(device) for k, v in batch.items()}
+
+
+def decode_tokens(tokenizer, token_ids):
+    text = tokenizer.decode(token_ids)
+    text = text.replace(" ", "")
+    text = text.replace(tokenizer.bos_token or "", "")
+    text = text.replace(tokenizer.eos_token or "", "")
+    text = text.replace(tokenizer.sep_token or "", "")
+    text = text.replace(tokenizer.pad_token or "", "")
+    return text
+
+
+def decode_prediction_sequences(tokenizer, sequences):
+    decoded = []
+    for seq in sequences:
+        token_ids = seq[0].tolist() if seq.dim() == 2 else seq.tolist()
+        decoded.append(decode_tokens(tokenizer, token_ids))
+    return decoded
+
+
+def get_eval_autocast_context(device, amp_dtype):
+    if device.type != "cuda" or amp_dtype in (None, "fp32"):
+        return nullcontext()
+
+    dtype_map = {
+        "fp16": torch.float16,
+        "bf16": torch.bfloat16,
+    }
+    if amp_dtype not in dtype_map:
+        raise ValueError(f"unsupported eval amp dtype: {amp_dtype}")
+    return torch.autocast(device_type="cuda", dtype=dtype_map[amp_dtype])
+
+
+def default_eval_amp_dtype(device):
+    if device.type != "cuda":
+        return "fp32"
+    if torch.cuda.is_bf16_supported():
+        return "bf16"
+    return "fp16"
+
+
+def evaluate_loss(model, dataloader, device, max_batches=None, amp_dtype=None):
+    model.eval()
+    total_loss = 0.0
+    total_batches = 0
+    amp_dtype = default_eval_amp_dtype(device) if amp_dtype is None else amp_dtype
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(dataloader):
+            if max_batches is not None and batch_idx >= max_batches:
+                break
+            batch = move_batch(batch, device)
+            with get_eval_autocast_context(device, amp_dtype):
+                _, loss, _ = model(**batch)
+            total_loss += loss.item()
+            total_batches += 1
+    model.train()
+    return total_loss / max(total_batches, 1)
+
+
+def evaluate_generation(
+    model,
+    dataset,
+    collator,
+    device,
+    sample_count,
+    max_new_tokens,
+    beam_width,
+    legacy_beam_token_penalty=False,
+):
+    total = min(sample_count, len(dataset))
+    raw_matches = 0
+    top1_matches = 0
+    topk_matches = 0
+    invalid_top1 = 0
+    eos_hits = 0
+    hit_max_len = 0
+    pred_token_lens = []
+    examples = []
+
+    model.eval()
+    with torch.no_grad():
+        for idx in range(total):
+            item = dataset[idx]
+            batch = collator([item])
+            batch = move_batch(batch, device)
+            pred_output = model.generate(
+                batch["product_input_ids"],
+                batch["product_attention_mask"],
+                max_new_tokens=max_new_tokens,
+                temperature=0.0,
+                top_k=None,
+                beam_width=beam_width,
+                return_all_beams=beam_width > 1,
+                legacy_beam_token_penalty=legacy_beam_token_penalty,
+            )
+            pred_ids = pred_output if isinstance(pred_output, list) else [pred_output]
+            beam_preds = decode_prediction_sequences(model.decoder_tokenizer, pred_ids)
+            pred = beam_preds[0] if beam_preds else ""
+            top_pred = pred_ids[0]
+            top_pred_ids = top_pred[0].tolist() if top_pred.dim() == 2 else top_pred.tolist()
+            eos_token_id = model.decoder_tokenizer.eos_token_id
+            eos_pos = top_pred_ids.index(eos_token_id) if eos_token_id in top_pred_ids else -1
+            pred_token_len = eos_pos if eos_pos >= 0 else len(top_pred_ids)
+            max_generated_tokens = max(max_new_tokens - 2, 1) if beam_width <= 1 else max(max_new_tokens, 1)
+            eos_hit = int(eos_pos >= 0)
+            hit_max_len_flag = int((eos_hit == 0) and pred_token_len >= max_generated_tokens)
+            target = item["reactants"].replace(" ", "")
+            product = item["product"].replace(" ", "")
+            target_canonical = canonicalize_precursor_set(target) or target
+            beam_preds_canonical = [canonicalize_precursor_set(candidate) for candidate in beam_preds]
+            raw_match = pred == target
+            top1_canonical = beam_preds_canonical[0] if beam_preds_canonical else None
+            canonical_match = top1_canonical == target_canonical
+            best_match_rank = ""
+            for rank, candidate_canonical in enumerate(beam_preds_canonical, start=1):
+                if candidate_canonical == target_canonical:
+                    best_match_rank = rank
+                    break
+
+            raw_matches += int(raw_match)
+            top1_matches += int(canonical_match)
+            topk_matches += int(best_match_rank != "")
+            invalid_top1 += int(top1_canonical is None)
+            eos_hits += eos_hit
+            hit_max_len += hit_max_len_flag
+            pred_token_lens.append(pred_token_len)
+            examples.append(
+                {
+                    "sample_idx": idx,
+                    "match": int(canonical_match),
+                    "match_raw": int(raw_match),
+                    "match_topk": int(best_match_rank != ""),
+                    "best_match_rank": best_match_rank,
+                    "decoder_input": model.decoder_tokenizer.bos_token,
+                    "product": product,
+                    "target": target,
+                    "target_canonical": target_canonical,
+                    "pred_token_len": pred_token_len,
+                    "eos_hit": eos_hit,
+                    "hit_max_len": hit_max_len_flag,
+                    "pred": pred,
+                    "pred_canonical": top1_canonical or "",
+                    "beam_preds": json.dumps(beam_preds, ensure_ascii=False),
+                    "beam_preds_canonical": json.dumps(
+                        [candidate or "" for candidate in beam_preds_canonical],
+                        ensure_ascii=False,
+                    ),
+                }
+            )
+    model.train()
+    denom = max(total, 1)
+    sorted_pred_lens = sorted(pred_token_lens)
+    pred_len_p95 = (
+        sorted_pred_lens[max(int(0.95 * len(sorted_pred_lens)) - 1, 0)]
+        if sorted_pred_lens else 0
+    )
+    generation_metrics = {
+        "generation_exact": top1_matches / denom,
+        "generation_topk_exact": topk_matches / denom,
+        "generation_raw_exact": raw_matches / denom,
+        "generation_invalid_top1_rate": invalid_top1 / denom,
+        "generation_eos_hit_rate": eos_hits / denom,
+        "generation_hit_max_len_rate": hit_max_len / denom,
+        "generation_pred_len_avg": (sum(pred_token_lens) / len(pred_token_lens)) if pred_token_lens else 0.0,
+        "generation_pred_len_p95": pred_len_p95,
+        "generation_eval_samples": total,
+        "generation_beam_width": beam_width,
+    }
+    return generation_metrics, examples
+
+
+def count_trainable_params(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def init_csv(path, fieldnames):
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
+
+def append_csv_row(path, fieldnames, row):
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writerow(row)
+
+
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def save_torch(path, data):
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    torch.save(data, tmp_path)
+    tmp_path.replace(path)
+
+
+def build_step_checkpoint_paths(save_dir, global_step):
+    stem = f"model_step_{global_step:08d}"
+    return save_dir / f"{stem}.pt", save_dir / f"{stem}.json"
+
+
+def save_model_snapshot(save_dir, global_step, model, meta):
+    step_model_path, step_meta_path = build_step_checkpoint_paths(save_dir, global_step)
+    latest_model_path = save_dir / "latest_model.pt"
+    latest_meta_path = save_dir / "latest_model.json"
+    save_torch(step_model_path, model.state_dict())
+    save_json(step_meta_path, meta)
+    save_torch(latest_model_path, model.state_dict())
+    save_json(latest_meta_path, meta)
+
+
+def build_resume_checkpoint_paths(save_dir, global_step):
+    stem = f"resume_step_{global_step:08d}"
+    return save_dir / f"{stem}.pt", save_dir / f"{stem}.json"
+
+
+def save_resume_snapshot(save_dir, global_step, model, optimizer, meta):
+    step_resume_path, step_meta_path = build_resume_checkpoint_paths(save_dir, global_step)
+    latest_resume_path = save_dir / "latest_resume.pt"
+    latest_resume_meta_path = save_dir / "latest_resume.json"
+    payload = {"model": model.state_dict(), "optimizer": optimizer.state_dict(), **meta}
+    save_torch(step_resume_path, payload)
+    save_json(step_meta_path, meta)
+    save_torch(latest_resume_path, payload)
+    save_json(latest_resume_meta_path, meta)
+
+
+def build_curve_points(rows, key, min_loss, max_loss, max_step, width, height, pad):
+    plot_width = width - 2 * pad
+    plot_height = height - 2 * pad
+    loss_span = max(max_loss - min_loss, 1e-6)
+    step_span = max(max_step, 1)
+    points = []
+    for row in rows:
+        x = pad + plot_width * (row["global_step"] / step_span)
+        y = height - pad - plot_height * ((row[key] - min_loss) / loss_span)
+        points.append(f"{x:.1f},{y:.1f}")
+    return " ".join(points)
+
+
+def save_loss_curve(train_history, eval_history, path):
+    rows = []
+    if train_history:
+        rows.extend(row["train_loss"] for row in train_history)
+    if eval_history:
+        rows.extend(row["eval_loss"] for row in eval_history)
+    if not rows:
+        return
+
+    width = 960
+    height = 540
+    pad = 60
+    min_loss = min(rows)
+    max_loss = max(rows)
+    max_step = max(
+        [row["global_step"] for row in train_history] + [row["global_step"] for row in eval_history] + [1]
+    )
+    train_points = build_curve_points(train_history, "train_loss", min_loss, max_loss, max_step, width, height, pad)
+    eval_points = build_curve_points(eval_history, "eval_loss", min_loss, max_loss, max_step, width, height, pad)
+
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+<rect width="100%" height="100%" fill="white"/>
+<line x1="{pad}" y1="{height - pad}" x2="{width - pad}" y2="{height - pad}" stroke="black" stroke-width="2"/>
+<line x1="{pad}" y1="{pad}" x2="{pad}" y2="{height - pad}" stroke="black" stroke-width="2"/>
+<text x="{width / 2:.1f}" y="{height - 15}" text-anchor="middle" font-size="18">global_step</text>
+<text x="20" y="{height / 2:.1f}" text-anchor="middle" font-size="18" transform="rotate(-90 20,{height / 2:.1f})">loss</text>
+<text x="{pad}" y="{pad - 15}" font-size="16">max={max_loss:.4f}</text>
+<text x="{pad}" y="{height - pad + 25}" font-size="16">min={min_loss:.4f}</text>
+<polyline fill="none" stroke="#1f77b4" stroke-width="3" points="{train_points}"/>
+<polyline fill="none" stroke="#ff7f0e" stroke-width="3" points="{eval_points}"/>
+<text x="{width - 220}" y="{pad}" font-size="16" fill="#1f77b4">train_loss</text>
+<text x="{width - 220}" y="{pad + 24}" font-size="16" fill="#ff7f0e">eval_loss</text>
+</svg>
+"""
+    path.write_text(svg, encoding="utf-8")
+
+
+def load_init_checkpoint(model, checkpoint_path):
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
+    model.load_state_dict(state_dict, strict=False)
+
+
+def load_resume_checkpoint(model, optimizer, checkpoint_path, device):
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    model.load_state_dict(checkpoint["model"], strict=False)
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    for state in optimizer.state.values():
+        for key, value in state.items():
+            if torch.is_tensor(value):
+                state[key] = value.to(device)
+    return checkpoint
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--train-csv", default="model/data/train.csv")
+    parser.add_argument("--eval-csv", default="model/data/eval.csv")
+    parser.add_argument("--save-dir", default="model/checkpoints")
+    parser.add_argument("--results-dir", default="model/results/test")
+    parser.add_argument("--init-checkpoint", default=None)
+    parser.add_argument("--resume-from", default=None)
+    parser.add_argument("--save-every-steps", type=int, default=None)
+    parser.add_argument("--resume-every-steps", type=int, default=None)
+    parser.add_argument("--disable-eval", action="store_true")
+    parser.add_argument("--stage", type=int, choices=[1, 2], default=1)
+    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--decoder-lr", type=float, default=None)
+    parser.add_argument("--weight-decay", type=float, default=0.0)
+    parser.add_argument("--max-product-len", type=int, default=128)
+    parser.add_argument("--max-reactants-len", type=int, default=128)
+    parser.add_argument("--trainable-decoder-blocks", type=int, default=4)
+    parser.add_argument("--limit-train", type=int, default=None)
+    parser.add_argument("--limit-eval", type=int, default=None)
+    parser.add_argument("--max-train-steps", type=int, default=None)
+    parser.add_argument("--max-eval-batches", type=int, default=None)
+    parser.add_argument("--generation-eval-samples", type=int, default=0)
+    parser.add_argument("--generation-max-new-tokens", type=int, default=128)
+    parser.add_argument("--generation-beam-width", type=int, default=1)
+    parser.add_argument("--generation-legacy-beam-token-penalty", action="store_true")
+    parser.add_argument("--preview-samples", type=int, default=3)
+    parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    device = torch.device(args.device)
+    if args.init_checkpoint is not None and args.resume_from is not None:
+        raise ValueError("--init-checkpoint and --resume-from cannot be used together")
+
+    model = RetrosynthesisModel().to(device)
+    configure_training_stage(model, args.stage, args.trainable_decoder_blocks)
+    optimizer = build_optimizer(model, args.lr, args.decoder_lr, args.weight_decay)
+    if args.resume_from is not None:
+        resume_state = load_resume_checkpoint(model, optimizer, args.resume_from, device)
+    else:
+        resume_state = None
+        if args.init_checkpoint is not None:
+            load_init_checkpoint(model, args.init_checkpoint)
+
+    train_dataset = ReactionDataset(args.train_csv, args.limit_train)
+    collator = RetrosynthesisCollator(
+        model.encoder_tokenizer,
+        model.decoder_tokenizer,
+        args.max_product_len,
+        args.max_reactants_len,
+    )
+
+    eval_dataset = None
+    eval_loader = None
+    if not args.disable_eval:
+        eval_dataset = ReactionDataset(args.eval_csv, args.limit_eval)
+        eval_loader = DataLoader(eval_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collator)
+
+    save_dir = Path(args.save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    results_dir = Path(args.results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    trainable_params = count_trainable_params(model)
+    print(f"trainable_params={trainable_params}")
+
+    train_loss_path = results_dir / "train_loss.csv"
+    eval_metrics_path = results_dir / "eval_metrics.csv"
+    generation_examples_path = results_dir / "generation_examples.csv"
+    loss_curve_path = results_dir / "loss_curve.svg"
+    if args.resume_from is None or not train_loss_path.exists():
+        init_csv(train_loss_path, ["epoch", "global_step", "train_loss"])
+    if not args.disable_eval and (args.resume_from is None or not eval_metrics_path.exists()):
+        init_csv(eval_metrics_path, get_eval_metric_fields(include_generation=True))
+    if not args.disable_eval and (args.resume_from is None or not generation_examples_path.exists()):
+        init_csv(generation_examples_path, ["epoch", *GENERATION_EXAMPLE_FIELDS])
+    save_json(results_dir / "run_config.json", {**vars(args), "trainable_params": trainable_params})
+
+    best_eval = None
+    start_epoch = 0
+    resume_epoch_step = 0
+    global_step = 0
+    last_epoch = -1
+    last_train_loss = None
+    train_history = []
+    eval_history = []
+    if resume_state is not None:
+        start_epoch = resume_state.get("epoch", 0)
+        resume_epoch_step = resume_state.get("epoch_step", 0)
+        global_step = resume_state.get("global_step", 0)
+        print(
+            f"resuming_from={args.resume_from} epoch={start_epoch} "
+            f"epoch_step={resume_epoch_step} global_step={global_step}"
+        )
+    model.train()
+
+    for epoch in range(start_epoch, args.epochs):
+        last_epoch = epoch
+        train_loader = build_train_loader(train_dataset, args.batch_size, collator, args.seed, epoch)
+        skip_batches = resume_epoch_step if epoch == start_epoch else 0
+        for batch_idx, batch in enumerate(train_loader):
+            if batch_idx < skip_batches:
+                continue
+            batch = move_batch(batch, device)
+            optimizer.zero_grad(set_to_none=True)
+            _, loss, _ = model(**batch)
+            loss.backward()
+            optimizer.step()
+
+            global_step += 1
+            train_row = {
+                "epoch": epoch,
+                "global_step": global_step,
+                "train_loss": float(loss.item()),
+            }
+            train_history.append(train_row)
+            last_train_loss = float(loss.item())
+            append_csv_row(train_loss_path, ["epoch", "global_step", "train_loss"], train_row)
+            print(f"epoch={epoch} step={global_step} train_loss={loss.item():.6f}")
+
+            if args.save_every_steps is not None and global_step % args.save_every_steps == 0:
+                save_model_snapshot(
+                    save_dir,
+                    global_step,
+                    model,
+                    {
+                        "epoch": epoch,
+                        "epoch_step": batch_idx + 1,
+                        "global_step": global_step,
+                        "train_loss": float(loss.item()),
+                        "stage": args.stage,
+                    },
+                )
+
+            if args.resume_every_steps is not None and global_step % args.resume_every_steps == 0:
+                save_resume_snapshot(
+                    save_dir,
+                    global_step,
+                    model,
+                    optimizer,
+                    {
+                        "epoch": epoch,
+                        "epoch_step": batch_idx + 1,
+                        "global_step": global_step,
+                        "train_loss": float(loss.item()),
+                        "stage": args.stage,
+                    },
+                )
+
+            if args.max_train_steps is not None and global_step >= args.max_train_steps:
+                break
+
+        resume_epoch_step = 0
+
+        if not args.disable_eval:
+            eval_loss = evaluate_loss(model, eval_loader, device, args.max_eval_batches)
+            eval_row = {
+                "epoch": epoch,
+                "global_step": global_step,
+                "eval_loss": float(eval_loss),
+                "generation_exact": "",
+                "generation_topk_exact": "",
+                "generation_raw_exact": "",
+                "generation_invalid_top1_rate": "",
+                "generation_eos_hit_rate": "",
+                "generation_hit_max_len_rate": "",
+                "generation_pred_len_avg": "",
+                "generation_pred_len_p95": "",
+            }
+            print(f"epoch={epoch} eval_loss={eval_loss:.6f}")
+
+            generation_metrics = None
+            preview_examples = []
+            if args.generation_eval_samples > 0:
+                generation_metrics, preview_examples = evaluate_generation(
+                    model,
+                    eval_dataset,
+                    collator,
+                    device,
+                    args.generation_eval_samples,
+                    args.generation_max_new_tokens,
+                    args.generation_beam_width,
+                    args.generation_legacy_beam_token_penalty,
+                )
+                eval_row.update(
+                    {
+                        "generation_exact": float(generation_metrics["generation_exact"]),
+                        "generation_topk_exact": float(generation_metrics["generation_topk_exact"]),
+                        "generation_raw_exact": float(generation_metrics["generation_raw_exact"]),
+                        "generation_invalid_top1_rate": float(generation_metrics["generation_invalid_top1_rate"]),
+                        "generation_eos_hit_rate": float(generation_metrics["generation_eos_hit_rate"]),
+                        "generation_hit_max_len_rate": float(generation_metrics["generation_hit_max_len_rate"]),
+                        "generation_pred_len_avg": float(generation_metrics["generation_pred_len_avg"]),
+                        "generation_pred_len_p95": float(generation_metrics["generation_pred_len_p95"]),
+                    }
+                )
+                print(f"epoch={epoch} generation_exact={generation_metrics['generation_exact']:.6f}")
+                if args.generation_beam_width > 1:
+                    print(f"epoch={epoch} generation_topk_exact={generation_metrics['generation_topk_exact']:.6f}")
+                print(f"epoch={epoch} generation_raw_exact={generation_metrics['generation_raw_exact']:.6f}")
+                print(f"epoch={epoch} generation_invalid_top1_rate={generation_metrics['generation_invalid_top1_rate']:.6f}")
+                print(f"epoch={epoch} generation_eos_hit_rate={generation_metrics['generation_eos_hit_rate']:.6f}")
+                print(f"epoch={epoch} generation_hit_max_len_rate={generation_metrics['generation_hit_max_len_rate']:.6f}")
+                print(f"epoch={epoch} generation_pred_len_avg={generation_metrics['generation_pred_len_avg']:.6f}")
+                print(f"epoch={epoch} generation_pred_len_p95={generation_metrics['generation_pred_len_p95']:.2f}")
+                for example in preview_examples:
+                    example_row = {"epoch": epoch, **example}
+                    append_csv_row(generation_examples_path, ["epoch", *GENERATION_EXAMPLE_FIELDS], example_row)
+                for example in preview_examples[:args.preview_samples]:
+                    print(f"preview_match={example['match']}")
+                    print(f"preview_product={example['product']}")
+                    print(f"preview_target={example['target']}")
+                    print(f"preview_pred={example['pred']}")
+                    print(f"preview_pred_canonical={example['pred_canonical']}")
+
+            eval_history.append(eval_row)
+            append_csv_row(eval_metrics_path, get_eval_metric_fields(include_generation=True), eval_row)
+            save_loss_curve(train_history, eval_history, loss_curve_path)
+
+            if best_eval is None or eval_loss < best_eval:
+                best_eval = eval_loss
+                torch.save(
+                    {
+                        "model": model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "epoch": epoch,
+                        "global_step": global_step,
+                        "eval_loss": eval_loss,
+                        "generation_exact": generation_metrics["generation_exact"] if generation_metrics is not None else None,
+                        "generation_topk_exact": (
+                            generation_metrics["generation_topk_exact"] if generation_metrics is not None else None
+                        ),
+                        "stage": args.stage,
+                    },
+                    save_dir / "best.pt",
+                )
+
+        if args.max_train_steps is not None and global_step >= args.max_train_steps:
+            break
+
+    final_meta = {
+        "epoch": last_epoch,
+        "epoch_step": 0,
+        "global_step": global_step,
+        "train_loss": last_train_loss,
+        "stage": args.stage,
+    }
+    final_resume_meta = {
+        "epoch": max(last_epoch + 1, 0),
+        "epoch_step": 0,
+        "global_step": global_step,
+        "train_loss": last_train_loss,
+        "stage": args.stage,
+    }
+    save_torch(save_dir / "final_model.pt", model.state_dict())
+    save_json(save_dir / "final_model.json", final_meta)
+    save_torch(save_dir / "latest_model.pt", model.state_dict())
+    save_json(save_dir / "latest_model.json", final_meta)
+    save_torch(
+        save_dir / "final_resume.pt",
+        {"model": model.state_dict(), "optimizer": optimizer.state_dict(), **final_resume_meta},
+    )
+    save_json(save_dir / "final_resume.json", final_resume_meta)
+    save_torch(
+        save_dir / "latest_resume.pt",
+        {"model": model.state_dict(), "optimizer": optimizer.state_dict(), **final_resume_meta},
+    )
+    save_json(save_dir / "latest_resume.json", final_resume_meta)
+
+
+if __name__ == "__main__":
+    main()

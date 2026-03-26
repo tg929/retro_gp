@@ -548,3 +548,52 @@
 - 低精度评估会让 loss 数值有轻微浮动，不应和历史 full-precision 小数点后很多位做严格逐位比较。
 - 即使启用 autocast，`generation_beam_width = 10`
   的大规模正式评估仍然耗时很高；显存问题缓解了，不代表 top-k 评估成本低。
+
+## 2026-03-26 Stage1/2 Code Extraction
+
+### 改了什么
+
+- 新增目录
+  `model/stage12model/`
+  ，用于归档旧版 Stage 1 / Stage 2 训练主干代码。
+- 把旧版 Stage1/2 主干脚本抽离到：
+  `model/stage12model/train_retrosynthesis.py`
+  `model/stage12model/evaluate_checkpoint.py`
+- 在
+  `model/stage12model/`
+  下新增了
+  `README.md`
+  和
+  `__init__.py`
+  ，明确目录用途。
+- 根目录入口改为兼容包装器：
+  `model/train_retrosynthesis.py`
+  `model/evaluate_checkpoint.py`
+  现在只做转发，分别调用
+  `model/stage12model/`
+  中的主干实现。
+- 为了避免直接运行子目录脚本时找不到
+  `retro_model.py`
+  ，在
+  `model/stage12model/train_retrosynthesis.py`
+  和
+  `model/stage12model/evaluate_checkpoint.py`
+  中增加了 parent `model/` 路径注入。
+- 更新了
+  `memory-bank/architecture.md`
+  对应条目，记录新的 Stage1/2 代码归档结构和兼容入口。
+
+### 为什么改
+
+- 用户要求把“之前的 Stage1/2 版本”从当前主线里抽离，单独放入一个新文件夹，仅保留主干实现，便于后续聚焦 REPA 主线。
+
+### 如何验证
+
+- 语法检查通过：
+  `python -m py_compile model/train_retrosynthesis.py model/evaluate_checkpoint.py model/stage12model/train_retrosynthesis.py model/stage12model/evaluate_checkpoint.py model/train_retrosynthesis_repa.py model/evaluate_repa_checkpoint.py`
+
+### 风险与待办
+
+- 目前根目录 Stage1/2 入口保留为“兼容包装器”，避免打断已有命令和 REPA 对公共函数的导入；如果后续要完全删除兼容层，需要先把所有外部调用切到
+  `model/stage12model/`
+  路径。
